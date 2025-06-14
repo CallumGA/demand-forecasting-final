@@ -4,6 +4,13 @@ import pandas as pd
     ***********************************************
      Feature engineering and data preprocessing code.
     ***********************************************
+    Features:
+    ------
+    Original Raw Features
+        If the zip file does not exist.
+    Engineered Features
+        If the file is not a valid zip archive.        
+    
 """
 
 # TODO: unzip the raw data in data/raw/data.zip
