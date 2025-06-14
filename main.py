@@ -1,18 +1,44 @@
+import joblib
 from dotenv import load_dotenv
-from src import feature_engineering_preprocessing
+from src import data_preprocess, feature_engineering
 
 """
     ***********************************************
-     Main orchestrator for the project
+     Entry point for full ML pipeline
     ***********************************************
 """
 
-load_dotenv()
 
-# extract raw data
-feature_engineering_preprocessing.extract_raw_data()
+def main():
+    print("Starting ML pipeline...\n")
 
-# sanitize the raw data (remove empty/NaN/malformed and encode holiday/promo in calendar.csv for model training)
-feature_engineering_preprocessing.sanitize_raw_calendar_data()
-feature_engineering_preprocessing.sanitize_raw_prices_data()
-feature_engineering_preprocessing.sanitize_raw_sales_data()
+    # Load environment variables
+    load_dotenv()
+
+    # Extract and sanitize raw data
+    print("Extracting and cleaning raw data...")
+    data_preprocess.extract_raw_data()
+    data_preprocess.sanitize_raw_calendar_data()
+    data_preprocess.sanitize_raw_sales_data()
+    data_preprocess.sanitize_raw_prices_data()
+    data_preprocess.melt_data()
+
+    # Feature engineering (building and appending final data file with custom engineered features)
+    # feature_engineering.parse_raw_features()
+
+    # Build training feature matrix and save to /data/processed
+    print("Generating training feature matrix...")
+    # data_preprocess.build_training_feature_matrix()
+
+    # Train model on cleaned feature set
+    print("Training model...")
+    # model = model_training.train_model()
+
+    # Run inference on evaluation window
+    print("Forecasting next 28 days...")
+    # forecast.run_forecast(model)
+
+    print("\nML pipeline completed successfully.")
+
+if __name__ == "__main__":
+    main()
