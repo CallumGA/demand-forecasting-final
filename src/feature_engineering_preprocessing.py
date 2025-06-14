@@ -1,4 +1,7 @@
+import os
 import pandas as pd
+from src import utils
+from dotenv import load_dotenv
 
 """
     ***********************************************
@@ -13,7 +16,10 @@ import pandas as pd
     
 """
 
+
 # TODO: unzip the raw data in data/raw/data.zip
+def extract_raw_data():
+    raw_data = utils.unzip_file(os.getenv("RAW_DATA_PATH"))
 
 # TODO: we need to first sanitize the csv by making sure there are no empty rows/columns/cells
 
