@@ -1,7 +1,5 @@
 import os
 import joblib
-import pandas as pd
-import pyarrow
 from src import utils
 from sklearn.preprocessing import LabelEncoder
 
