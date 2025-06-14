@@ -16,12 +16,13 @@ from dotenv import load_dotenv
     
 """
 
-
-# TODO: unzip the raw data in data/raw/data.zip
 def extract_raw_data():
-    raw_data = utils.unzip_file(os.getenv("RAW_DATA_PATH"))
+    utils.unzip_file(os.getenv("RAW_DATA_PATH"))
 
 # TODO: we need to first sanitize the csv by making sure there are no empty rows/columns/cells
+def sanitize_raw_data():
+    ...
+
 
 # TODO: then we write to the cleaned final csv in data/processed/sales_cleaned.parquet
 
