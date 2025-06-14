@@ -1,7 +1,6 @@
 import os
-import pandas as pd
 from src import utils
-from dotenv import load_dotenv
+from sklearn.preprocessing import LabelEncoder
 
 """
     ***********************************************
@@ -10,22 +9,44 @@ from dotenv import load_dotenv
     Features:
     ------
     Original Raw Features
-        If the zip file does not exist.
+        - 
+        -
     Engineered Features
-        If the file is not a valid zip archive.        
-    
+        -
+        -     
 """
 
 def extract_raw_data():
     utils.unzip_file(os.getenv("RAW_DATA_PATH"))
 
-# TODO: we need to first sanitize the csv by making sure there are no empty rows/columns/cells
-def sanitize_raw_data():
-    ...
+
+def sanitize_raw_calendar_data():
+    calendar_data = utils.load_csv(os.getenv("CALENDAR_DATA_PATH"))
+    utils.validate_dataframe_integrity(calendar_data)
+    event_columns = ['event_name_1', 'event_type_1', 'event_name_2', 'event_type_2']
+    for col in event_columns:
+        calendar_data[col] = calendar_data[col].fillna('None')
+        le = LabelEncoder()
+        calendar_data[col] = le.fit_transform(calendar_data[col])
+    calendar_data.to_csv(os.getenv('CALENDAR_DATA_PATH'), index=False)
+    print(f"Cleaned and saved to: {os.getenv('CALENDAR_DATA_PATH')}")
+
+
+def sanitize_raw_prices_data():
+    sales_data = utils.load_csv(os.getenv("SELL_PRICES_DATA_PATH"))
+    utils.validate_dataframe_integrity(sales_data)
+
+
+def sanitize_raw_sales_data():
+    prices_data = utils.load_csv(os.getenv("SALES_VALIDATION_DATA_PATH"))
+    utils.validate_dataframe_integrity(prices_data)
+
 
 
 # TODO: then we write to the cleaned final csv in data/processed/sales_cleaned.parquet
 
 # TODO: next we want to rip features out of the other csvs into the main sales_cleaned.parquet: price, day_of_week, is_holiday, lag_7, rolling_mean_7
 
-# TODO: finally we want to append the new feature rows to data/processed/sales_cleaned.parquet
+# TODO: melt to from wide format to long format and finally we want to append the new feature rows to data/processed/sales_cleaned.parquet
+
+# TODO: we also must melt sales_train_evaluation.csv to look exactly like the preprocessed final csv which we train the model with
