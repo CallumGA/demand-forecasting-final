@@ -3,39 +3,34 @@ from dotenv import load_dotenv
 from src import data_preprocess, feature_engineering
 
 """
-    ***********************************************
-     Entry point for full ML pipeline
-    ***********************************************
+**************************************************
+ Entry point for full ML pipeline
+**************************************************
 """
 
-
 def main():
-    print("Starting ML pipeline...\n")
+    print("🚀 Starting ML pipeline...\n")
 
     # Load environment variables
     load_dotenv()
 
-    # Extract and sanitize raw data
+    # Step 1: Data extraction and cleaning
     print("Extracting and cleaning raw data...")
-    data_preprocess.extract_raw_data()
-    data_preprocess.sanitize_raw_calendar_data()
-    data_preprocess.sanitize_raw_sales_data()
-    data_preprocess.sanitize_raw_prices_data()
-    data_preprocess.melt_data()
+    data_preprocess.run_data_cleaning_pipeline()
 
-    # Feature engineering (building and appending final data file with custom engineered features)
+    # Step 2: Feature engineering
     print("Engineering features...")
     feature_engineering.apply_feature_engineering()
 
-    # Build training feature matrix and save to /data/processed
+    # Step 3: Build training matrix
     print("Generating training feature matrix...")
-    # data_preprocess.build_training_feature_matrix()
+    # data_preprocess.build_training_matrix()
 
-    # Train model on cleaned feature set
+    # Step 4: Model training
     print("Training model...")
     # model = model_training.train_model()
 
-    # Run inference on evaluation window
+    # Step 5: Forecasting
     print("Forecasting next 28 days...")
     # forecast.run_forecast(model)
 
