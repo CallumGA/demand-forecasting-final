@@ -4,9 +4,9 @@ from src import utils
 from sklearn.preprocessing import LabelEncoder
 
 """
-    *****************************************************
-     Clean and encode data where needed before training.
-    *****************************************************
+    ****************************************************************************
+     Clean, sanitize, and encode data for categorical features before training.
+    ****************************************************************************
 """
 
 
@@ -56,5 +56,11 @@ def melt_data():
     melted_sales = melted_sales.sort_values(by=['id', 'd']).reset_index(drop=True)
     melted_sales.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
     print(f"Melted and saved cleaned data file to: {os.getenv('CLEANED_SALES_DATA')}. Ready for converting to training matrix.")
-    print(melted_sales['d'].nunique())  # Should be 1913
-    print(melted_sales['date'].min(), melted_sales['date'].max())  # Should match full sales range
+    print(melted_sales['d'].nunique())
+    print(melted_sales['date'].min(), melted_sales['date'].max())
+
+
+def build_training_matrix():
+    """
+    Prepare CSV into training matrix by encoding non-numerical columns.
+    """
