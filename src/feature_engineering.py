@@ -1,5 +1,4 @@
 import os
-import pandas as pd
 from src import utils
 
 """
@@ -9,24 +8,46 @@ from src import utils
     Features:
     ------
     Original Raw Features
-        -
-        -
+        - (from cleaned sales data: sales, item_id, date, price, etc.)
     Engineered Features
-        - snap_CA, snap_TX, and snap_WI features into a single 'snap' feature
-        -
+        - 'snap' from snap_CA, snap_TX, snap_WI
+        - 'is_event_day' from event_name_1/event_type_1/event_name_2/event_type_2
+        - More features coming: day_of_week, lag_7, rolling_mean_7, etc.
 """
-# TODO: next we want to engineer features out of the other csvs into the main sales_cleaned.csv: price, day_of_week, special_event_1, special_event_2, lag_7, rolling_mean_7 and parse to sales_cleaned.parquet
 
 
-def main():
-    snap_df = utils.load_csv(os.getenv("CLEANED_SALES_DATA"))
-    merge_snap_feature(snap_df)
+def apply_feature_engineering():
+    df = utils.load_csv(os.getenv("CLEANED_SALES_DATA"))
+    df = add_single_snap_feature(df)
+    df = add_single_event_feature(df)
+    # df = add_sales_lag(df)
+    # df = add_rolling_features(df)
+    # df = add_date_features(df)
+    df.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
+    print(f"Saved updated feature set to: {os.getenv('CLEANED_SALES_DATA')}")
 
 
-def merge_snap_feature(df):
+def add_single_snap_feature(df):
     snap_map = {'CA': 'snap_CA', 'TX': 'snap_TX', 'WI': 'snap_WI'}
     df['snap'] = df.apply(lambda row: row[snap_map[row['state_id']]], axis=1)
-    df.drop(['snap_CA', 'snap_TX', 'snap_WI'], axis=1, inplace=True)
+    return df.drop(['snap_CA', 'snap_TX', 'snap_WI'], axis=1)
 
-    df.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
 
+def add_single_event_feature(df):
+    df['is_event_day'] = df[['event_name_1', 'event_name_2']].notna().any(axis=1).astype(int)
+    return df.drop(['event_name_1', 'event_type_1', 'event_name_2', 'event_type_2'], axis=1)
+
+
+def add_sales_lag(df):
+    # Placeholder for lag feature engineering
+    return df
+
+
+def add_rolling_features(df):
+    # Placeholder for rolling average feature engineering
+    return df
+
+
+def add_date_features(df):
+    # Placeholder for date-based features like is_weekend, day_of_week, etc.
+    return df

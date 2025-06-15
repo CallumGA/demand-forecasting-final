@@ -17,15 +17,15 @@ def main():
 
     # Extract and sanitize raw data
     print("Extracting and cleaning raw data...")
-    #data_preprocess.extract_raw_data()
-    #data_preprocess.sanitize_raw_calendar_data()
-    #data_preprocess.sanitize_raw_sales_data()
-    #data_preprocess.sanitize_raw_prices_data()
-    #data_preprocess.melt_data()
+    data_preprocess.extract_raw_data()
+    data_preprocess.sanitize_raw_calendar_data()
+    data_preprocess.sanitize_raw_sales_data()
+    data_preprocess.sanitize_raw_prices_data()
+    data_preprocess.melt_data()
 
     # Feature engineering (building and appending final data file with custom engineered features)
     print("Engineering features...")
-    feature_engineering.main()
+    feature_engineering.apply_feature_engineering()
 
     # Build training feature matrix and save to /data/processed
     print("Generating training feature matrix...")

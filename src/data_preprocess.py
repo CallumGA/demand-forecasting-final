@@ -22,11 +22,6 @@ def sanitize_raw_calendar_data():
     os.makedirs(encoder_dir, exist_ok=True)
     for col in event_columns:
         calendar_data[col] = calendar_data[col].fillna('None')
-        le = LabelEncoder()
-        calendar_data[col] = le.fit_transform(calendar_data[col])
-        encoder_path = os.path.join(encoder_dir, f"{col}_encoder.pkl")
-        joblib.dump(le, encoder_path)
-        print(f"Saved encoder: {encoder_path}")
     calendar_data.to_csv(os.getenv('CALENDAR_DATA_PATH'), index=False)
     print(f"Cleaned and saved to: {os.getenv('CALENDAR_DATA_PATH')}")
 
@@ -55,7 +50,7 @@ def melt_data():
                                       on=['store_id', 'item_id', 'wm_yr_wk'])
     melted_sales = melted_sales.sort_values(by=['id', 'd']).reset_index(drop=True)
     melted_sales.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
-    print(f"Melted and saved cleaned data file to: {os.getenv('CLEANED_SALES_DATA')}. Ready for converting to training matrix.")
+    print(f"Melted and saved cleaned data file to: {os.getenv('CLEANED_SALES_DATA')}. Ready for feature engineering.")
     print(melted_sales['d'].nunique())
     print(melted_sales['date'].min(), melted_sales['date'].max())
 
