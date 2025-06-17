@@ -56,11 +56,3 @@ def melt_sales_data():
     melted_df.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
     print(f"Melted and saved cleaned data to: {os.getenv('CLEANED_SALES_DATA')}")
     print(f"Days covered: {melted_df['d'].nunique()} | From {melted_df['date'].min()} to {melted_df['date'].max()}")
-
-
-def build_training_matrix():
-    """
-    Prepare final dataset for model input by encoding categorical features.
-    This function can be expanded based on modeling needs.
-    """
-    pass  # To be implemented

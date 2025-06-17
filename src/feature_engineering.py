@@ -51,3 +51,16 @@ def add_rolling_features(df):
 def add_date_features(df):
     # Placeholder for date-based features like is_weekend, day_of_week, etc.
     return df
+
+
+def remove_irrelevant_features(df):
+    # Remove irrelevant features that will just be noise
+    return df
+
+
+def build_training_matrix():
+    """
+    Prepare final dataset for model input by encoding categorical features.
+    This function can be expanded based on modeling needs.
+    """
+    pass  # To be implemented
