@@ -1,6 +1,6 @@
 import joblib
 from dotenv import load_dotenv
-from src import data_preprocess, feature_engineering
+from src import data_preprocess, feature_engineering, xgboost_model_training
 
 """
 **************************************************
@@ -16,11 +16,11 @@ def main():
 
     # Step 1: Data extraction and cleaning
     print("Extracting and cleaning raw data...")
-    data_preprocess.run_data_cleaning_pipeline()
+    # data_preprocess.run_data_cleaning_pipeline()
 
     # Step 2: Feature engineering
     print("Engineering features...")
-    feature_engineering.apply_feature_engineering()
+    # feature_engineering.apply_feature_engineering()
 
     # Step 3: Build training matrix
     print("Generating training feature matrix...")
@@ -28,7 +28,7 @@ def main():
 
     # Step 4: Model training
     print("Training model...")
-    # model = model_training.train_model()
+    model = xgboost_model_training.train_xgboost_model()
 
     # Step 5: Forecasting
     print("Forecasting next 28 days...")
