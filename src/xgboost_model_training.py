@@ -10,6 +10,7 @@ import xgboost
 
 # TODO: calibration_by_pair is 0.999 which is too high for 90th percentile - we should aim for 0.90
 # TODO: must also repeat for 50th percentile - train a new model for this in separate file
+# TODO: split out the training and the predicting for when we train/predict the actual which is in train_model_evaluation.csv
 
 def train_xgboost_model():
 
