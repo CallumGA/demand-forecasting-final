@@ -33,5 +33,6 @@ model = xgboost.XGBRegressor(
     n_estimators=200,
     subsample=0.8,
     colsample_bytree=0.8,
-    random_state=42
+    random_state=42,
+    early_stopping_rounds=30,
 )
