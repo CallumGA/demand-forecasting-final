@@ -84,9 +84,6 @@ def remove_irrelevant_features(df):
     return df
 
 
-def build_training_matrix():
-    """
-    Prepare final dataset for model input by encoding categorical features.
-    This function can be expanded based on modeling needs.
-    """
-    pass
+def is_weekend(df):
+    ...
+    # TODO: add is_weekend for better training outcome

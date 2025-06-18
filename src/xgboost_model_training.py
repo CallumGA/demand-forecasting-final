@@ -8,6 +8,9 @@ import xgboost
     ****************************************************************
 """
 
+# TODO: calibration_by_pair is 0.999 which is too high for 90th percentile - we should aim for 0.90
+# TODO: must also repeat for 50th percentile - train a new model for this in separate file
+
 def train_xgboost_model():
 
     df = pd.read_csv(os.getenv("CLEANED_SALES_DATA"))
@@ -74,20 +77,33 @@ def train_xgboost_model():
     # actually predict our last 10% sales based on the last 10% of features
     y_pred = model.predict(X_val)
 
+    # attach identifiers for context
+    val_context = df.iloc[-val_size:][["item_id", "store_id", "d"]].reset_index(drop=True)
+
     results = pd.DataFrame({
+        "item_id": val_context["item_id"],
+        "store_id": val_context["store_id"],
+        "d": val_context["d"],
         "Actual Sales": y_val.values,
         "Predicted Threshold (90%)": y_pred
     })
 
-    # show sample predictions with context
     print("\nSample predictions (90th percentile):")
     for idx, row in results.head(10).iterrows():
-        print(f"Day {idx}: Actual = {row['Actual Sales']}, "
-              f"Model predicts sales will be ≤ {row['Predicted Threshold (90%)']:.2f} in 90% of cases")
+        print(
+            f"{row['item_id']} @ {row['store_id']} on {row['d']}: "
+            f"Actual = {row['Actual Sales']}, "
+            f"Model predicts sales will be ≤ {row['Predicted Threshold (90%)']:.2f} in 90% of cases"
+        )
 
-    # calculate calibration score: % of times actual is below predicted 90th percentile
-    calibration_score = (y_val <= y_pred).mean()
-    print(f"\nCalibration Score (ideally ≈ 0.90): {calibration_score:.3f}")
+    calibration_score = (results["Actual Sales"] <= results["Predicted Threshold (90%)"]).mean()
+    print(f"\nGlobal Calibration Score (ideal ≈ 0.90): {calibration_score:.3f}")
 
-    # save trained model to file
+    calibration_by_pair = results.groupby(["item_id", "store_id"], observed=True).apply(
+        lambda g: (g["Actual Sales"] <= g["Predicted Threshold (90%)"]).mean()
+    ).reset_index(name="Calibration")
+
+    print("\nSample per-product/location calibration:")
+    print(calibration_by_pair.head(10))
+
     model.save_model(os.getenv("SAVED_MODELS"))
