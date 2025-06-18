@@ -72,11 +72,22 @@ def train_xgboost_model():
     )
 
     # actually predict our last 10% sales based on the last 10% of features
-    preds = model.predict(X_val)
+    y_pred = model.predict(X_val)
 
     results = pd.DataFrame({
-        "Actual": y_val.values,
-        "Predicted": preds
+        "Actual Sales": y_val.values,
+        "Predicted Threshold (90%)": y_pred
     })
 
-    print(results)
+    # show sample predictions with context
+    print("\nSample predictions (90th percentile):")
+    for idx, row in results.head(10).iterrows():
+        print(f"Day {idx}: Actual = {row['Actual Sales']}, "
+              f"Model predicts sales will be ≤ {row['Predicted Threshold (90%)']:.2f} in 90% of cases")
+
+    # calculate calibration score: % of times actual is below predicted 90th percentile
+    calibration_score = (y_val <= y_pred).mean()
+    print(f"\nCalibration Score (ideally ≈ 0.90): {calibration_score:.3f}")
+
+    # save trained model to file
+    model.save_model(os.getenv("SAVED_MODELS"))
