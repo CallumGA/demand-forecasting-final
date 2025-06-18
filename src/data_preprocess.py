@@ -7,6 +7,7 @@ from src import utils
 **************************************************
 """
 
+
 def run_data_cleaning_pipeline():
     extract_raw_data()
     sanitize_calendar_data()

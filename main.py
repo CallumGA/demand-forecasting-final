@@ -9,7 +9,7 @@ from src import data_preprocess, feature_engineering
 """
 
 def main():
-    print("🚀 Starting ML pipeline...\n")
+    print("Starting ML pipeline...\n")
 
     # Load environment variables
     load_dotenv()
