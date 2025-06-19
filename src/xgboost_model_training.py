@@ -19,8 +19,6 @@ from mlflow.models.signature import infer_signature
 """
 
 # TODO: Log updated to handle logging PER product id/store location
-# TODO: Everything needs to be done PER product id/store location or else the model won't learn properly
-# TODO: The 90/10 split must be PER product id/store location
 
 # set URI for mlflow evaluation
 mlflow.set_tracking_uri("http://127.0.0.1:5000")
