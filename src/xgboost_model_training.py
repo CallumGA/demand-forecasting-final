@@ -28,7 +28,12 @@ mlflow.set_tracking_uri("http://127.0.0.1:5000")
 # centralized configuration for hyperparameters per quantile
 QUANTILE_CONFIGS = {
     0.9: {"max_depth": 6, "learning_rate": 0.1, "n_estimators": 200, "subsample": 0.8, "colsample_bytree": 0.8},
-    0.5: {"max_depth": 6, "learning_rate": 0.1, "n_estimators": 200, "subsample": 0.8, "colsample_bytree": 0.8}
+    # max-depth: lower 6->4 for 50th qunatile. Will smooth out results/predictions (pay less attention to spikes)
+    # learning-rate: lower from 1 to 0.05. Helps model learn more gradually. Focus more on stable patterns.
+    # n_estimators: 200->300 Balances more trees paired with smaller learning rate. Helps avoid settling on conservative trends too soon.
+    # subsample: 0.8-<0.9. Encourages diversity in the trees (less chance of uniform bias)
+    # colsample_bytree: 0.8->0.9. Helps avoid over-reliance on a small number of features (e.g., price or lag)
+    0.5: {"max_depth": 4, "learning_rate": 0.05, "n_estimators": 300, "subsample": 0.9, "colsample_bytree": 0.9}
 }
 
 def groupwise_time_split(df, val_days=28):
