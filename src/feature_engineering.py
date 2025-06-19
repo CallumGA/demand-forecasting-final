@@ -40,6 +40,7 @@ def sort_by_date(df):
 def add_single_snap_feature(df):
     snap_map = {'CA': 'snap_CA', 'TX': 'snap_TX', 'WI': 'snap_WI'}
     df['snap'] = df.apply(lambda row: row[snap_map[row['state_id']]], axis=1)
+    # TODO: this is broken - adding values like 10
     return df.drop(['snap_CA', 'snap_TX', 'snap_WI'], axis=1)
 
 
@@ -70,6 +71,13 @@ def add_day_of_week(df):
 
 def add_price_change_pct(df):
     df["price_change_pct"] = df.groupby("item_id")["sell_price"].transform(lambda x: (x - x.mean()) / x.mean())
+    """
+    # TODO: 	1.	is_discounted = (sell_price < rolling_max_price_last_30_days)
+	•	True when there’s a price drop (even if small).
+	•	Categorical (0/1) = much more XGBoost-friendly when changes are rare.
+	2.	price_change_flag = (sell_price != lag_1_price)
+	•	Flags price movement (up/down) in the most recent day.
+    """
     return df
 
 
