@@ -15,26 +15,22 @@ def main():
     load_dotenv()
 
     # Step 1: Data extraction and cleaning
-    print("Extracting and cleaning raw data...")
+    print("Extracting and cleaning raw data...\n")
     # data_preprocess.run_data_cleaning_pipeline()
 
     # Step 2: Feature engineering
-    print("Engineering features...")
+    print("Engineering features...\n")
     # feature_engineering.apply_feature_engineering()
 
-    # Step 3: Build training matrix
-    print("Generating training feature matrix...")
-    # data_preprocess.build_training_matrix()
+    # Step 3: Model training
+    print("Training model...\n")
+    xgboost_model_training.train_all_quantiles()
 
-    # Step 4: Model training
-    print("Training model...")
-    model = xgboost_model_training.train_xgboost_model()
-
-    # Step 5: Forecasting
-    print("Forecasting next 28 days...")
+    # Step 4: Forecasting
+    print("Forecasting next 28 days...\n")
     # forecast.run_forecast(model)
 
-    print("\nML pipeline completed successfully.")
+    print("\nML pipeline completed successfully.\n")
 
 if __name__ == "__main__":
     main()

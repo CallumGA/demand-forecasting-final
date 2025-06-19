@@ -87,3 +87,4 @@ def remove_irrelevant_features(df):
 def is_weekend(df):
     ...
     # TODO: add is_weekend for better training outcome
+

@@ -1,50 +1,56 @@
 import os
 import pandas as pd
 import xgboost
+import mlflow
+import mlflow.xgboost
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from mlflow.models.signature import infer_signature
 
 """
     ****************************************************************
-     Train and optimize the model including hyper-parameter tuning.
+     Train and log quantile XGBoost models via MLflow.
     ****************************************************************
+    Run in Terminal: mlflow ui
+    Visit http://127.0.0.1:5000 after running `mlflow ui` to view results.
 """
 
-# TODO: calibration_by_pair is 0.999 which is too high for 90th percentile - we should aim for 0.90
-# TODO: must also repeat for 50th percentile - train a new model for this in separate file
-# TODO: split out the training and the predicting for when we train/predict the actual which is in train_model_evaluation.csv
+# set URI for mlflow evaluation
+mlflow.set_tracking_uri("http://127.0.0.1:5000")
 
-def train_xgboost_model():
+# centralized configuration for hyperparameters per quantile
+QUANTILE_CONFIGS = {
+    0.9: {
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "n_estimators": 200,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+    },
+    0.5: {
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "n_estimators": 200,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+    }
+}
 
+
+def train_boosted_model(quantile_alpha: float, model_name: str):
+
+    # read cleaned data csv
     df = pd.read_csv(os.getenv("CLEANED_SALES_DATA"))
 
-    # cast categorical columns for native handling
+    # make the non-numerical fields categorical for xgboost
     df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
 
-    # define target and feature columns
+    # split data into y target (sales) and x (features)
     y = df["sales"]
     X = df[[
         "sell_price", "snap", "is_event_day", "lag_7", "rolling_mean_7",
         "day_of_week", "price_change_pct", "month", "item_id", "store_id"
     ]]
-
-    # model hyperparameters
-    model = xgboost.XGBRegressor(
-        objective="reg:quantileerror",
-        # 90th percentile target: 90% of values expected to be ≤ prediction
-        quantile_alpha=0.9,
-        tree_method="hist",
-        enable_categorical=True,
-        max_depth=6,
-        learning_rate=0.1,
-        n_estimators=200,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        early_stopping_rounds=30,
-    )
-
-    # how big the validation set should be from training data. We take 90% for training, 10% for validation.
-    val_size = int(0.1 * len(X))
 
     """
     X_train: First 90% of feature data used to train the model
@@ -57,54 +63,81 @@ def train_xgboost_model():
     where we train on historical patterns and validate predictions 
     on unseen, more recent data — helping evaluate model performance realistically.
     """
+    val_size = int(0.1 * len(X))
+    X_train, X_val = X[:-val_size], X[-val_size:]
+    y_train, y_val = y[:-val_size], y[-val_size:]
 
-    # training features ("sell_price", "snap", "is_event_day", "lag_7", "rolling_mean_7",
-    #         "day_of_week", "price_change_pct", "month", "item_id", "store_id") (first 90%)
-    X_train = X[:-val_size]
-    # sales for training ("sales") (first 90%)
-    y_train = y[:-val_size]
+    # get the correct hyperparams for the quantile we want
+    config = QUANTILE_CONFIGS[quantile_alpha]
 
-    # validation features ("sales") (last 10%)
-    X_val = X[-val_size:]
-    # actual sales for validation ("sales") (last 10%)
-    y_val = y[-val_size:]
-
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_val, y_val)],
-        verbose=10,
+    # apply the hyperparameters
+    model = xgboost.XGBRegressor(
+        objective="reg:quantileerror",
+        quantile_alpha=quantile_alpha,
+        tree_method="hist",
+        enable_categorical=True,
+        max_depth=config["max_depth"],
+        learning_rate=config["learning_rate"],
+        n_estimators=config["n_estimators"],
+        subsample=config["subsample"],
+        colsample_bytree=config["colsample_bytree"],
+        random_state=42,
+        early_stopping_rounds=30,
     )
 
-    # actually predict our last 10% sales based on the last 10% of features
-    y_pred = model.predict(X_val)
+    # start the ml flow logging for evaluation
+    with mlflow.start_run(run_name=f"Quantile_{int(quantile_alpha * 100)}"):
+        mlflow.log_params({
+            "quantile_alpha": quantile_alpha,
+            **config
+        })
 
-    # attach identifiers for context
-    val_context = df.iloc[-val_size:][["item_id", "store_id", "d"]].reset_index(drop=True)
+        # fit the model - this is where we train and validate
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
-    results = pd.DataFrame({
-        "item_id": val_context["item_id"],
-        "store_id": val_context["store_id"],
-        "d": val_context["d"],
-        "Actual Sales": y_val.values,
-        "Predicted Threshold (90%)": y_pred
-    })
+        # make our actual predictions
+        y_pred = model.predict(X_val)
 
-    print("\nSample predictions (90th percentile):")
-    for idx, row in results.head(10).iterrows():
-        print(
-            f"{row['item_id']} @ {row['store_id']} on {row['d']}: "
-            f"Actual = {row['Actual Sales']}, "
-            f"Model predicts sales will be ≤ {row['Predicted Threshold (90%)']:.2f} in 90% of cases"
+        # construct results logging objects
+        val_context = df.iloc[-val_size:][["item_id", "store_id", "d"]].reset_index(drop=True)
+        results = pd.DataFrame({
+            "item_id": val_context["item_id"],
+            "store_id": val_context["store_id"],
+            "d": val_context["d"],
+            "Actual Sales": y_val.values,
+            "Predicted Threshold": y_pred
+        })
+
+        # metric 1: Calibration Score (custom quantile coverage)
+        calibration_score = (results["Actual Sales"] <= results["Predicted Threshold"]).mean()
+        mlflow.log_metric("calibration_score", calibration_score)
+
+        # metric 2 & 3: MAE and RMSE (classical error metrics)
+        mae = mean_absolute_error(y_val, y_pred)
+        rmse = mean_squared_error(y_val, y_pred) ** 0.5
+        mlflow.log_metric("mae", mae)
+        mlflow.log_metric("rmse", rmse)
+
+        # save model to disk + log to MLflow
+        save_path = os.getenv("SAVED_MODELS")
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            model.save_model(os.path.join(save_path, f"{model_name}.json"))
+
+        # log model with schema and input example
+        signature = infer_signature(X_val, y_pred)
+        mlflow.xgboost.log_model(
+            model,
+            artifact_path="model",
+            input_example=X_val.iloc[:1],
+            signature=signature
         )
 
-    calibration_score = (results["Actual Sales"] <= results["Predicted Threshold (90%)"]).mean()
-    print(f"\nGlobal Calibration Score (ideal ≈ 0.90): {calibration_score:.3f}")
 
-    calibration_by_pair = results.groupby(["item_id", "store_id"], observed=True).apply(
-        lambda g: (g["Actual Sales"] <= g["Predicted Threshold (90%)"]).mean()
-    ).reset_index(name="Calibration")
+def train_all_quantiles():
+    train_boosted_model(quantile_alpha=0.9, model_name="xgb_quantile_90")
+    train_boosted_model(quantile_alpha=0.5, model_name="xgb_quantile_50")
 
-    print("\nSample per-product/location calibration:")
-    print(calibration_by_pair.head(10))
 
-    model.save_model(os.getenv("SAVED_MODELS"))
+if __name__ == "__main__":
+    train_all_quantiles()
