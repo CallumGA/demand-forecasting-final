@@ -40,7 +40,6 @@ def sort_by_date(df):
 def add_single_snap_feature(df):
     snap_map = {'CA': 'snap_CA', 'TX': 'snap_TX', 'WI': 'snap_WI'}
     df['snap'] = df.apply(lambda row: row[snap_map[row['state_id']]], axis=1)
-    # TODO: this is broken - adding values like 10
     return df.drop(['snap_CA', 'snap_TX', 'snap_WI'], axis=1)
 
 
@@ -51,6 +50,7 @@ def add_single_event_feature(df):
 
 def add_sales_lag(df):
     df["lag_7"] = df.groupby(["item_id", "store_id"])["sales"].shift(7)
+    # TODO: Fix any rolling features to avoid leakage
     return df
 
 
@@ -61,6 +61,7 @@ def add_rolling_mean(df):
           .rolling(window=7, min_periods=7)
           .mean()
     )
+    # TODO: Fix any rolling features to avoid leakage
     return df
 
 
