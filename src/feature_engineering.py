@@ -21,12 +21,12 @@ import pandas as pd
 def apply_feature_engineering():
     df = utils.load_csv(os.getenv("CLEANED_SALES_DATA"))
     df = sort_by_date(df)
-    df = add_single_snap_feature(df)
+    #df = add_single_snap_feature(df)
     df = add_single_event_feature(df)
     df = add_sales_lag(df)
     df = add_rolling_mean(df)
     df = add_day_of_week(df)
-    df = add_price_change_pct(df)
+    #df = add_price_change_pct(df)
     df = remove_irrelevant_features(df)
 
     df.to_csv(os.getenv("CLEANED_SALES_DATA"), index=False)
@@ -50,7 +50,6 @@ def add_single_event_feature(df):
 
 def add_sales_lag(df):
     df["lag_7"] = df.groupby(["item_id", "store_id"])["sales"].shift(7)
-    # TODO: Fix any rolling features to avoid leakage
     return df
 
 
@@ -61,7 +60,6 @@ def add_rolling_mean(df):
           .rolling(window=7, min_periods=7)
           .mean()
     )
-    # TODO: Fix any rolling features to avoid leakage
     return df
 
 

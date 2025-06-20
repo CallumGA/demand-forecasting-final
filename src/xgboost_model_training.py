@@ -1,37 +1,62 @@
 import os
+import numpy as np
 import pandas as pd
 import xgboost
 import mlflow
 import mlflow.xgboost
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from mlflow.models.signature import infer_signature
+import optuna
 
 """
-    ****************************************************************
-     Train and log quantile XGBoost models via MLflow.
-    ****************************************************************
-    Run in Terminal: mlflow ui
-    Visit http://127.0.0.1:5000 after running `mlflow ui` to view results.
+****************************************************************
+ Train and log quantile XGBoost models via MLflow.
+****************************************************************
+Run in Terminal: mlflow ui
+Visit http://127.0.0.1:5000 after running `mlflow ui` to view results.
 
-    1. Split per group — the last 28 days of each item/store pair.
-    2. Train and evaluate globally, but preserve group info for evaluation.
-    3. Measure calibration and pinball loss per group to detect problems like under-predicting spikes.
+1. Split per group — the last 28 days of each item/store pair.
+2. Train and evaluate globally, but preserve group info for evaluation.
+3. Measure calibration and pinball loss per group to detect problems like under-predicting spikes.
 """
 
-# TODO: Log updated to handle logging PER product id/store location
+# TODO: Add hyperparams from the optuna outputs.....
+# TODO: Remove optuna and ml flow when model is performing properlyExample Workflow:
+# TODO: Build a 28-day rolling-quantile baseline for each item × store, compute its group-wise pinball loss and coverage using the same groupwise_pinball_loss function as the model, and log both baseline and model metrics side-by-side for direct comparison.
+# TODO: Add SHAP to explain features and choose the best ones
+# 	1.	Run SHAP on your current model
+# 	2.	Identify underperforming regions (bad predictions)
+# 	3.	See which features are driving those errors
+# 	4.	Hypothesize new engineered features (e.g. lags, interactions, log transforms)
+# 	5.	Retrain and re-SHAP — repeat!
 
 # set URI for mlflow evaluation
 mlflow.set_tracking_uri("http://127.0.0.1:5000")
 
-# centralized configuration for hyperparameters per quantile
+# centralized configuration for hyperparameters per quantile (if not tuning)
 QUANTILE_CONFIGS = {
-    0.9: {"max_depth": 6, "learning_rate": 0.1, "n_estimators": 200, "subsample": 0.8, "colsample_bytree": 0.8},
-    # max-depth: lower 6->4 for 50th qunatile. Will smooth out results/predictions (pay less attention to spikes)
-    # learning-rate: lower from 1 to 0.05. Helps model learn more gradually. Focus more on stable patterns.
-    # n_estimators: 200->300 Balances more trees paired with smaller learning rate. Helps avoid settling on conservative trends too soon.
-    # subsample: 0.8-<0.9. Encourages diversity in the trees (less chance of uniform bias)
-    # colsample_bytree: 0.8->0.9. Helps avoid over-reliance on a small number of features (e.g., price or lag)
-    0.5: {"max_depth": 4, "learning_rate": 0.05, "n_estimators": 300, "subsample": 0.9, "colsample_bytree": 0.9}
+    0.9: {
+        "max_depth": 7,
+        "learning_rate": 0.11986597583433842,
+        "n_estimators": 334,
+        "subsample": 0.920309685792909,
+        "colsample_bytree": 0.768086782088947,
+        "min_child_weight": 8.249795901241658,
+        "gamma": 0.4622984156928419,
+        "reg_lambda": 0.5790748841440645,
+        "reg_alpha": 1.0946520339010668
+    },
+    0.5: {
+        "max_depth": 8,
+        "learning_rate": 0.11421647505386022,
+        "n_estimators": 281,
+        "subsample": 0.7272559090308933,
+        "colsample_bytree": 0.8875348068275094,
+        "min_child_weight": 8.285762749215156,
+        "gamma": 1.037840631251667,
+        "reg_lambda": 4.109038729104575,
+        "reg_alpha": 3.184399463923405
+    }
 }
 
 def groupwise_time_split(df, val_days=28):
@@ -43,33 +68,70 @@ def groupwise_time_split(df, val_days=28):
             val_list.append(group.iloc[-val_days:])
     return pd.concat(train_list), pd.concat(val_list)
 
-def train_boosted_model(quantile_alpha: float, model_name: str):
-    # read cleaned data csv
-    df = pd.read_csv(os.getenv("CLEANED_SALES_DATA"))
 
-    # make the non-numerical fields categorical for xgboost
+def compute_pinball_loss(y_true, y_pred, quantile):
+    delta = y_true - y_pred
+    return np.mean(np.maximum(quantile * delta, (quantile - 1) * delta))
+
+
+def groupwise_pinball_loss(df, quantile):
+    def pinball(y_true, y_pred):
+        delta = y_true - y_pred
+        return np.mean(np.maximum(quantile * delta, (quantile - 1) * delta))
+
+    grouped = df.groupby(["item_id", "store_id"])
+    losses = grouped.apply(lambda g: pinball(g["sales"], g["pred"]))
+    return losses.mean()
+
+
+def train_boosted_model(quantile_alpha: float, model_name: str, use_optuna=False):
+    df = pd.read_csv(os.getenv("CLEANED_SALES_DATA"))
     df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
 
-    # define features
     features = [
-        "sell_price", "snap", "is_event_day", "lag_7", "rolling_mean_7",
-        "day_of_week", "price_change_pct", "month", "item_id", "store_id"
+        "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
+        "day_of_week", "month", "item_id", "store_id"
     ]
 
-    # do a time-based 90/10 split PER product/store location
     train_df, val_df = groupwise_time_split(df)
+    X_train, y_train = train_df[features], train_df["sales"]
+    X_val, y_val = val_df[features], val_df["sales"]
 
-    # extract training and validation sets
-    X_train = train_df[features]
-    y_train = train_df["sales"]
-    X_val = val_df[features]
-    y_val = val_df["sales"]
+    def objective(trial):
+        config = {
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        }
 
-    # get the correct hyperparams for the quantile we want
-    config = QUANTILE_CONFIGS[quantile_alpha]
+        model = xgboost.XGBRegressor(
+            objective="reg:quantileerror",
+            quantile_alpha=quantile_alpha,
+            tree_method="hist",
+            enable_categorical=True,
+            random_state=42,
+            early_stopping_rounds=30,
+            **config,
+        )
 
-    # apply the hyperparameters
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        y_pred = model.predict(X_val)
+
+        # compute groupwise pinball loss for fair evaluation
+        val_copy = val_df.copy()
+        val_copy["pred"] = y_pred
+        return groupwise_pinball_loss(val_copy, quantile_alpha)
+
+    if use_optuna:
+        study = optuna.create_study(direction="minimize")
+        study.optimize(objective, n_trials=20, n_jobs=5)
+        config = study.best_params
+    else:
+        config = QUANTILE_CONFIGS[quantile_alpha]
+
     model = xgboost.XGBRegressor(
         objective="reg:quantileerror",
         quantile_alpha=quantile_alpha,
@@ -84,49 +146,41 @@ def train_boosted_model(quantile_alpha: float, model_name: str):
         early_stopping_rounds=30,
     )
 
-    # start the mlflow logging for evaluation
     with mlflow.start_run(run_name=f"Quantile_{int(quantile_alpha * 100)}"):
         mlflow.log_params({"quantile_alpha": quantile_alpha, **config})
-
-        # fit the model - this is where we train and validate
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-
-        # make our actual predictions
         y_pred = model.predict(X_val)
 
-        # attach predictions back to the val_df
         val_df = val_df.copy()
         val_df["pred"] = y_pred
         val_df["covered"] = (val_df["sales"] <= y_pred).astype(int)
 
-        # calculate groupwise coverage score (calibration) per product/store
         group_eval = val_df.groupby(["item_id", "store_id"]).agg({
-            "sales": "mean",
-            "pred": "mean",
-            "covered": "mean"
+            "sales": "mean", "pred": "mean", "covered": "mean"
         }).reset_index()
 
-        # metric 1: Calibration Score (average groupwise coverage)
         avg_coverage = group_eval["covered"].mean()
-
-        # metric 2: MAE (classical error metric)
         mae = mean_absolute_error(y_val, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+        pinball = compute_pinball_loss(y_val, y_pred, quantile_alpha)
+        group_pinball = groupwise_pinball_loss(val_df, quantile_alpha)
 
-        # metric 3: RMSE (classical error metric)
-        rmse = mean_squared_error(y_val, y_pred) ** 0.5
-
-        # log all metrics to mlflow
         mlflow.log_metric("avg_groupwise_coverage", avg_coverage)
         mlflow.log_metric("mae", mae)
         mlflow.log_metric("rmse", rmse)
+        mlflow.log_metric("pinball_loss", pinball)
+        mlflow.log_metric("groupwise_pinball_loss", group_pinball)
 
-        # save model to disk + log to MLflow
+        sample_df = val_df.groupby(["item_id", "store_id"]).apply(
+            lambda g: g.sample(1, random_state=42)).reset_index(drop=True)
+        mlflow.log_text(sample_df[["item_id", "store_id", "sales", "pred"]].to_csv(index=False),
+                        "sample_predictions.csv")
+
         save_path = os.getenv("SAVED_MODELS")
         if save_path:
             os.makedirs(save_path, exist_ok=True)
             model.save_model(os.path.join(save_path, f"{model_name}.json"))
 
-        # log model with schema and input example
         signature = infer_signature(X_val, y_pred)
         mlflow.xgboost.log_model(
             model,
@@ -135,9 +189,11 @@ def train_boosted_model(quantile_alpha: float, model_name: str):
             signature=signature
         )
 
+
 def train_all_quantiles():
-    train_boosted_model(quantile_alpha=0.9, model_name="xgb_quantile_90")
-    train_boosted_model(quantile_alpha=0.5, model_name="xgb_quantile_50")
+    train_boosted_model(quantile_alpha=0.9, model_name="xgb_quantile_90", use_optuna=True)
+    train_boosted_model(quantile_alpha=0.5, model_name="xgb_quantile_50", use_optuna=True)
+
 
 if __name__ == "__main__":
     train_all_quantiles()
