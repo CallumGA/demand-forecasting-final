@@ -1,39 +1,24 @@
 import os
+import json
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import xgboost
-import mlflow
-import mlflow.xgboost
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from mlflow.models.signature import infer_signature
-import optuna
 
 """
 ****************************************************************
- Train and log quantile XGBoost models via MLflow.
+ Quantile XGBoost trainer **with** rolling-quantile baseline
+ For each quantile:
+ 1.	Load data → 2. group-by time split → 3. train XGBoost quantile model → 4. generate validation predictions
+  → 5. build rolling-quantile baseline → 6. compute identical pinball-loss metrics for model and baseline → 7. dump everything into a timestamped JSON log (plus optional model file).
 ****************************************************************
-Run in Terminal: mlflow ui
-Visit http://127.0.0.1:5000 after running `mlflow ui` to view results.
-
-1. Split per group — the last 28 days of each item/store pair.
-2. Train and evaluate globally, but preserve group info for evaluation.
-3. Measure calibration and pinball loss per group to detect problems like under-predicting spikes.
 """
 
-# TODO: Add hyperparams from the optuna outputs.....
-# TODO: Remove optuna and ml flow when model is performing properlyExample Workflow:
-# TODO: Build a 28-day rolling-quantile baseline for each item × store, compute its group-wise pinball loss and coverage using the same groupwise_pinball_loss function as the model, and log both baseline and model metrics side-by-side for direct comparison.
-# TODO: Add SHAP to explain features and choose the best ones
-# 	1.	Run SHAP on your current model
-# 	2.	Identify underperforming regions (bad predictions)
-# 	3.	See which features are driving those errors
-# 	4.	Hypothesize new engineered features (e.g. lags, interactions, log transforms)
-# 	5.	Retrain and re-SHAP — repeat!
-
-# set URI for mlflow evaluation
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
-
-# centralized configuration for hyperparameters per quantile (if not tuning)
+# ---------------------------------------------------------------------------
+# hyperparameters (optuna tuned)
+# ---------------------------------------------------------------------------
 QUANTILE_CONFIGS = {
     0.9: {
         "max_depth": 7,
@@ -44,7 +29,7 @@ QUANTILE_CONFIGS = {
         "min_child_weight": 8.249795901241658,
         "gamma": 0.4622984156928419,
         "reg_lambda": 0.5790748841440645,
-        "reg_alpha": 1.0946520339010668
+        "reg_alpha": 1.0946520339010668,
     },
     0.5: {
         "max_depth": 8,
@@ -55,144 +40,206 @@ QUANTILE_CONFIGS = {
         "min_child_weight": 8.285762749215156,
         "gamma": 1.037840631251667,
         "reg_lambda": 4.109038729104575,
-        "reg_alpha": 3.184399463923405
-    }
+        "reg_alpha": 3.184399463923405,
+    },
 }
 
-def groupwise_time_split(df, val_days=28):
-    train_list, val_list = [], []
-    for _, group in df.groupby(["item_id", "store_id"]):
-        group = group.sort_values("d")
-        if len(group) > val_days + 30:
-            train_list.append(group.iloc[:-val_days])
-            val_list.append(group.iloc[-val_days:])
-    return pd.concat(train_list), pd.concat(val_list)
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+def groupwise_time_split(df: pd.DataFrame, val_days: int = 28):
+    """Chronological split per (item, store) to train | validation."""
+    train, val = [], []
+    for _, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
+        g = g.sort_values("d")
+        if len(g) > val_days + 30:
+            train.append(g.iloc[:-val_days])
+            val.append(g.iloc[-val_days:])
+    return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
 
 
-def compute_pinball_loss(y_true, y_pred, quantile):
+# ---------------------------------------------------------------------------
+# Loss Function (Predicted & Baseline)
+# ---------------------------------------------------------------------------
+# Pinball loss (a.k.a. quantile loss) formula:
+#     L_q(y, ŷ) = mean_i { max( q · (y_i − ŷ_i),
+#                              (q − 1) · (y_i − ŷ_i) ) }
+# Interpretation
+#  • Under-prediction (y_i > ŷ_i)  → loss =  q · (y_i − ŷ_i)
+#  • Over-prediction  (y_i ≤ ŷ_i)  → loss = (q − 1) · (y_i − ŷ_i)
+#
+# Asymmetric penalty forces the model to target the chosen quantile:
+# higher q amplifies the cost of under-predicting, lower q amplifies the cost
+# of over-predicting.
+# ─────────────────────────────────────────────────────────────────────────────
+def compute_pinball_loss(y_true, y_pred, q: float):
+    """Vectorised pinball loss with shape-checks."""
+    y_true = np.asarray(y_true, dtype=float).ravel()
+    y_pred = np.asarray(y_pred, dtype=float).ravel()
+    assert (
+        y_true.shape == y_pred.shape
+    ), f"Shape mismatch in pinball loss: {y_true.shape} vs {y_pred.shape}"
+
     delta = y_true - y_pred
-    return np.mean(np.maximum(quantile * delta, (quantile - 1) * delta))
+    return np.mean(np.maximum(q * delta, (q - 1) * delta))
 
 
-def groupwise_pinball_loss(df, quantile):
-    def pinball(y_true, y_pred):
-        delta = y_true - y_pred
-        return np.mean(np.maximum(quantile * delta, (quantile - 1) * delta))
+def groupwise_pinball_loss(df: pd.DataFrame, q: float):
+    def _loss(sub):
+        sub = sub.dropna(subset=["sales", "pred"])
+        if sub.empty:
+            return np.nan
+        return compute_pinball_loss(sub["sales"], sub["pred"], q)
 
-    grouped = df.groupby(["item_id", "store_id"])
-    losses = grouped.apply(lambda g: pinball(g["sales"], g["pred"]))
-    return losses.mean()
+    return (
+        df.groupby(["item_id", "store_id"], sort=False, observed=True)
+        .apply(_loss, include_groups=False)
+        .dropna()
+        .mean()
+    )
 
 
-def train_boosted_model(quantile_alpha: float, model_name: str, use_optuna=False):
-    df = pd.read_csv(os.getenv("CLEANED_SALES_DATA"))
+def rolling_quantile_baseline(full_df: pd.DataFrame, q: float, window: int = 28):
+    return (
+        full_df.groupby(["item_id", "store_id"], sort=False, observed=True)["sales"]
+        .shift(1)
+        .rolling(window=window, min_periods=window)
+        .quantile(q)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Core training routine
+# ---------------------------------------------------------------------------
+def train_boosted_model(quantile_alpha: float, model_name: str):
+    data_path = os.getenv("CLEANED_SALES_DATA", "cleaned_sales.csv")
+    df = pd.read_csv(data_path)
     df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
 
-    features = [
-        "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
-        "day_of_week", "month", "item_id", "store_id"
+    FEATURES = [
+        "sell_price",
+        "is_event_day",
+        "lag_7",
+        "rolling_mean_7",
+        "day_of_week",
+        "month",
+        "item_id",
+        "store_id",
     ]
 
     train_df, val_df = groupwise_time_split(df)
-    X_train, y_train = train_df[features], train_df["sales"]
-    X_val, y_val = val_df[features], val_df["sales"]
+    X_train, y_train = train_df[FEATURES], train_df["sales"]
+    X_val, y_val = val_df[FEATURES], val_df["sales"]
 
-    def objective(trial):
-        config = {
-            "max_depth": trial.suggest_int("max_depth", 3, 8),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
-            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        }
-
-        model = xgboost.XGBRegressor(
-            objective="reg:quantileerror",
-            quantile_alpha=quantile_alpha,
-            tree_method="hist",
-            enable_categorical=True,
-            random_state=42,
-            early_stopping_rounds=30,
-            **config,
-        )
-
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        y_pred = model.predict(X_val)
-
-        # compute groupwise pinball loss for fair evaluation
-        val_copy = val_df.copy()
-        val_copy["pred"] = y_pred
-        return groupwise_pinball_loss(val_copy, quantile_alpha)
-
-    if use_optuna:
-        study = optuna.create_study(direction="minimize")
-        study.optimize(objective, n_trials=20, n_jobs=5)
-        config = study.best_params
-    else:
-        config = QUANTILE_CONFIGS[quantile_alpha]
-
+    # ---------------- Model ----------------
+    cfg = QUANTILE_CONFIGS[quantile_alpha]
     model = xgboost.XGBRegressor(
         objective="reg:quantileerror",
         quantile_alpha=quantile_alpha,
         tree_method="hist",
         enable_categorical=True,
-        max_depth=config["max_depth"],
-        learning_rate=config["learning_rate"],
-        n_estimators=config["n_estimators"],
-        subsample=config["subsample"],
-        colsample_bytree=config["colsample_bytree"],
         random_state=42,
         early_stopping_rounds=30,
+        **cfg,
+    )
+    model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+
+    # model predictions
+    y_pred = model.predict(X_val)
+
+    val_eval = val_df.copy()
+    val_eval["pred"] = y_pred
+    val_eval["covered"] = (val_eval["sales"] <= y_pred).astype(int)
+
+    # -------------- Baseline --------------
+    full_df = pd.concat([train_df, val_eval], ignore_index=True)
+    baseline_series = rolling_quantile_baseline(full_df, quantile_alpha).loc[val_eval.index]
+    val_eval["baseline_pred"] = baseline_series
+
+    mask = ~val_eval["baseline_pred"].isna()
+    val_masked = val_eval[mask].copy()
+
+    bp = val_masked["baseline_pred"]
+    if bp.ndim > 1:
+        bp = bp.iloc[:, 0]
+
+    # ---------------- Metrics -------------
+    avg_cov = (
+        val_eval.groupby(["item_id", "store_id"], observed=True)["covered"].mean().mean()
+    )
+    mae = mean_absolute_error(y_val, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+    pinball = compute_pinball_loss(y_val, y_pred, quantile_alpha)
+    grp_pinball = groupwise_pinball_loss(val_eval, quantile_alpha)
+
+    # Baseline (masked rows)
+    baseline_mae = mean_absolute_error(val_masked["sales"], bp)
+    baseline_rmse = np.sqrt(mean_squared_error(val_masked["sales"], bp))
+    baseline_pinball = compute_pinball_loss(val_masked["sales"], bp, quantile_alpha)
+
+    base_df_for_loss = val_masked.rename(columns={"baseline_pred": "pred"})
+    baseline_grp_pinball = groupwise_pinball_loss(base_df_for_loss, quantile_alpha)
+    baseline_cov = (
+        base_df_for_loss.groupby(["item_id", "store_id"], observed=True)["covered"].mean().mean()
     )
 
-    with mlflow.start_run(run_name=f"Quantile_{int(quantile_alpha * 100)}"):
-        mlflow.log_params({"quantile_alpha": quantile_alpha, **config})
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-        y_pred = model.predict(X_val)
+    # ---------------- Logging -------------
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = os.getenv("LOG_DIR", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"{model_name}_{timestamp}.txt")
 
-        val_df = val_df.copy()
-        val_df["pred"] = y_pred
-        val_df["covered"] = (val_df["sales"] <= y_pred).astype(int)
+    samples = (
+        val_eval.groupby(["item_id", "store_id"], sort=False, observed=True)
+        .apply(lambda g: g.sample(1, random_state=42))
+        .reset_index(drop=True)[
+            ["item_id", "store_id", "sales", "pred", "baseline_pred"]
+        ]
+        .to_dict(orient="records")
+    )
 
-        group_eval = val_df.groupby(["item_id", "store_id"]).agg({
-            "sales": "mean", "pred": "mean", "covered": "mean"
-        }).reset_index()
+    log_content = {
+        "timestamp": timestamp,
+        "model_name": model_name,
+        "quantile_alpha": quantile_alpha,
+        "hyperparameters": cfg,
+        "metrics": {
+            "model": {
+                "avg_groupwise_coverage": avg_cov,
+                "mae": mae,
+                "rmse": rmse,
+                "pinball_loss": pinball,
+                "groupwise_pinball_loss": grp_pinball,
+            },
+            "baseline": {
+                "avg_groupwise_coverage": baseline_cov,
+                "mae": baseline_mae,
+                "rmse": baseline_rmse,
+                "pinball_loss": baseline_pinball,
+                "groupwise_pinball_loss": baseline_grp_pinball,
+            },
+        },
+        "sample_predictions": samples,
+    }
 
-        avg_coverage = group_eval["covered"].mean()
-        mae = mean_absolute_error(y_val, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        pinball = compute_pinball_loss(y_val, y_pred, quantile_alpha)
-        group_pinball = groupwise_pinball_loss(val_df, quantile_alpha)
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(log_content, f, indent=2)
+    print(f"[INFO] Logged → {log_path}")
 
-        mlflow.log_metric("avg_groupwise_coverage", avg_coverage)
-        mlflow.log_metric("mae", mae)
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("pinball_loss", pinball)
-        mlflow.log_metric("groupwise_pinball_loss", group_pinball)
-
-        sample_df = val_df.groupby(["item_id", "store_id"]).apply(
-            lambda g: g.sample(1, random_state=42)).reset_index(drop=True)
-        mlflow.log_text(sample_df[["item_id", "store_id", "sales", "pred"]].to_csv(index=False),
-                        "sample_predictions.csv")
-
-        save_path = os.getenv("SAVED_MODELS")
-        if save_path:
-            os.makedirs(save_path, exist_ok=True)
-            model.save_model(os.path.join(save_path, f"{model_name}.json"))
-
-        signature = infer_signature(X_val, y_pred)
-        mlflow.xgboost.log_model(
-            model,
-            artifact_path="model",
-            input_example=X_val.iloc[:1],
-            signature=signature
-        )
+    # Optionally save trained booster
+    save_dir = os.getenv("SAVED_MODELS")
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        model.save_model(os.path.join(save_dir, f"{model_name}.json"))
 
 
+# ---------------------------------------------------------------------------
+# Run both quantiles
+# ---------------------------------------------------------------------------
 def train_all_quantiles():
-    train_boosted_model(quantile_alpha=0.9, model_name="xgb_quantile_90", use_optuna=True)
-    train_boosted_model(quantile_alpha=0.5, model_name="xgb_quantile_50", use_optuna=True)
+    train_boosted_model(0.9, "xgb_quantile_90")
+    train_boosted_model(0.5, "xgb_quantile_50")
 
 
 if __name__ == "__main__":
