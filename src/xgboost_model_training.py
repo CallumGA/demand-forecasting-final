@@ -89,7 +89,13 @@ def groupwise_pinball_loss(df: pd.DataFrame, q: float):
         sub = sub.dropna(subset=["sales", "pred"])
         if sub.empty:
             return np.nan
-        return compute_pinball_loss(sub["sales"], sub["pred"], q)
+
+        # Handle accidental duplicate "pred" columns
+        y_pred = sub["pred"]
+        if isinstance(y_pred, pd.DataFrame):
+            y_pred = y_pred.iloc[:, 0]
+
+        return compute_pinball_loss(sub["sales"], y_pred, q)
 
     return (
         df.groupby(["item_id", "store_id"], sort=False, observed=True)
@@ -147,6 +153,10 @@ def train_boosted_model(quantile_alpha: float, model_name: str):
 
     # model predictions
     y_pred = model.predict(X_val)
+
+    # Ensure no duplicate 'pred' columns from previous runs
+    if "pred" in val_df.columns:
+        val_df = val_df.drop(columns="pred")
 
     val_eval = val_df.copy()
     val_eval["pred"] = y_pred
