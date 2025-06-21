@@ -16,15 +16,15 @@ def main():
 
     # Step 1: Data extraction and cleaning
     print("Extracting and cleaning raw data...\n")
-    # data_preprocess.run_data_cleaning_pipeline()
+    #data_preprocess.run_data_cleaning_pipeline()
 
     # Step 2: Feature engineering
     print("Engineering features...\n")
-    # feature_engineering.apply_feature_engineering()
+    #feature_engineering.apply_feature_engineering()
 
     # Step 3: Model training
     print("Training model...\n")
-    xgboost_model_training.train_all_quantiles()
+    xgboost_model_training.train_point_forecast()
 
     # Step 4: Forecasting
     print("Forecasting next 28 days...\n")

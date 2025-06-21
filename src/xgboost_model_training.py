@@ -1,7 +1,6 @@
 import os
 import json
 from datetime import datetime
-
 import numpy as np
 import pandas as pd
 import xgboost
@@ -9,115 +8,109 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 """
 ****************************************************************
- Quantile XGBoost trainer **with** rolling-quantile baseline
- For each quantile:
- 1.	Load data → 2. group-by time split → 3. train XGBoost quantile model → 4. generate validation predictions
-  → 5. build rolling-quantile baseline → 6. compute identical pinball-loss metrics for model and baseline → 7. dump everything into a timestamped JSON log (plus optional model file).
+ Point Forecasting XGBoost trainer with RMSE and MAE metrics
 ****************************************************************
 """
 
-# ---------------------------------------------------------------------------
-# hyperparameters (optuna tuned)
-# ---------------------------------------------------------------------------
-QUANTILE_CONFIGS = {
-    0.9: {
-        "max_depth": 7,
-        "learning_rate": 0.11986597583433842,
-        "n_estimators": 334,
-        "subsample": 0.920309685792909,
-        "colsample_bytree": 0.768086782088947,
-        "min_child_weight": 8.249795901241658,
-        "gamma": 0.4622984156928419,
-        "reg_lambda": 0.5790748841440645,
-        "reg_alpha": 1.0946520339010668,
-    },
-    0.5: {
-        "max_depth": 8,
-        "learning_rate": 0.11421647505386022,
-        "n_estimators": 281,
-        "subsample": 0.7272559090308933,
-        "colsample_bytree": 0.8875348068275094,
-        "min_child_weight": 8.285762749215156,
-        "gamma": 1.037840631251667,
-        "reg_lambda": 4.109038729104575,
-        "reg_alpha": 3.184399463923405,
-    },
+# TODO: add 10th an 90th quantile regression models for "uncertainty"
+# TODO: go through each function/calculation and document/explain for future
+# TODO: prepare the cleaned csv for what we submit code-wise (just stripped down training code)
+# TODO: Make predictions on the actual evaluation data
+# TODO: graph samples and document the actual predictions
+
+
+POINT_FORECAST_CONFIG = {
+    "max_depth": 7,
+    "learning_rate": 0.1,
+    "n_estimators": 300,
+    "subsample": 0.9,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 5,
+    "gamma": 0.1,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.1,
 }
 
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
-def groupwise_time_split(df: pd.DataFrame, val_days: int = 28):
-    """Chronological split per (item, store) to train | validation."""
+
+def groupwise_time_split(df: pd.DataFrame, val_days: int = 28, min_train_days: int = 90):
+    """
+    Improved time split with minimum training period requirement
+    """
     train, val = [], []
-    for _, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
-        g = g.sort_values("d")
-        if len(g) > val_days + 30:
-            train.append(g.iloc[:-val_days])
-            val.append(g.iloc[-val_days:])
+    for name, group in df.groupby(["item_id", "store_id"], sort=False, observed=True):
+        group = group.sort_values("d")
+        if len(group) >= min_train_days + val_days:
+            train.append(group.iloc[:-val_days])
+            val.append(group.iloc[-val_days:])
+        else:
+            print(f"Warning: Skipping group {name} - insufficient data ({len(group)} days)")
+
+    if not train:
+        raise ValueError("No groups have sufficient data for training")
+
     return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
 
 
-# ---------------------------------------------------------------------------
-# Loss Function (Predicted & Baseline)
-# ---------------------------------------------------------------------------
-# Pinball loss (a.k.a. quantile loss) formula:
-#     L_q(y, ŷ) = mean_i { max( q · (y_i − ŷ_i),
-#                              (q − 1) · (y_i − ŷ_i) ) }
-# Interpretation
-#  • Under-prediction (y_i > ŷ_i)  → loss =  q · (y_i − ŷ_i)
-#  • Over-prediction  (y_i ≤ ŷ_i)  → loss = (q − 1) · (y_i − ŷ_i)
-#
-# Asymmetric penalty forces the model to target the chosen quantile:
-# higher q amplifies the cost of under-predicting, lower q amplifies the cost
-# of over-predicting.
-# ─────────────────────────────────────────────────────────────────────────────
-def compute_pinball_loss(y_true, y_pred, q: float):
-    """Vectorised pinball loss with shape-checks."""
+def compute_individual_losses(y_true, y_pred_model, y_pred_baseline):
+    """
+    Compute individual MAE and RMSE for each data point
+    """
     y_true = np.asarray(y_true, dtype=float).ravel()
-    y_pred = np.asarray(y_pred, dtype=float).ravel()
-    assert (
-        y_true.shape == y_pred.shape
-    ), f"Shape mismatch in pinball loss: {y_true.shape} vs {y_pred.shape}"
+    y_pred_model = np.asarray(y_pred_model, dtype=float).ravel()
+    y_pred_baseline = np.asarray(y_pred_baseline, dtype=float).ravel()
 
-    delta = y_true - y_pred
-    return np.mean(np.maximum(q * delta, (q - 1) * delta))
+    mae_model = np.abs(y_true - y_pred_model)
+    mae_baseline = np.abs(y_true - y_pred_baseline)
 
+    se_model = (y_true - y_pred_model) ** 2
+    se_baseline = (y_true - y_pred_baseline) ** 2
 
-def groupwise_pinball_loss(df: pd.DataFrame, q: float):
-    def _loss(sub):
-        sub = sub.dropna(subset=["sales", "pred"])
-        if sub.empty:
-            return np.nan
-
-        # Handle accidental duplicate "pred" columns
-        y_pred = sub["pred"]
-        if isinstance(y_pred, pd.DataFrame):
-            y_pred = y_pred.iloc[:, 0]
-
-        return compute_pinball_loss(sub["sales"], y_pred, q)
-
-    return (
-        df.groupby(["item_id", "store_id"], sort=False, observed=True)
-        .apply(_loss, include_groups=False)
-        .dropna()
-        .mean()
-    )
+    return mae_model, mae_baseline, se_model, se_baseline
 
 
-def rolling_quantile_baseline(full_df: pd.DataFrame, q: float, window: int = 28):
-    return (
-        full_df.groupby(["item_id", "store_id"], sort=False, observed=True)["sales"]
-        .shift(1)
-        .rolling(window=window, min_periods=window)
-        .quantile(q)
-    )
+def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, window: int = 28):
+    """
+    Compute rolling mean baseline without data leakage
+    """
+    baseline_preds = []
+
+    for name, val_group in val_df.groupby(["item_id", "store_id"], observed=True):
+        train_group = train_df[
+            (train_df["item_id"] == name[0]) &
+            (train_df["store_id"] == name[1])
+            ].sort_values("d")
+
+        if len(train_group) < window:
+            baseline_val = train_group["sales"].mean()
+            baseline_preds.extend([baseline_val] * len(val_group))
+        else:
+            train_rolling = train_group["sales"].rolling(
+                window=window, min_periods=window
+            ).mean()
+
+            last_baseline = train_rolling.iloc[-1]
+            baseline_preds.extend([last_baseline] * len(val_group))
+
+    return np.array(baseline_preds)
 
 
-# ---------------------------------------------------------------------------
-# Core training routine
-# ---------------------------------------------------------------------------
-def train_boosted_model(quantile_alpha: float, model_name: str):
+def validate_features(df: pd.DataFrame, features: list):
+    """Validate that required features exist and handle missing values"""
+    missing_features = [f for f in features if f not in df.columns]
+    if missing_features:
+        raise ValueError(f"Missing features: {missing_features}")
+
+    for feature in features:
+        if feature in ["item_id", "store_id"]:
+            continue
+        nan_pct = df[feature].isna().mean()
+        if nan_pct > 0.1:
+            print(f"Warning: {feature} has {nan_pct:.1%} missing values")
+
+    return df.dropna(subset=features)
+
+
+def train_point_forecast_model(model_name: str):
     data_path = os.getenv("CLEANED_SALES_DATA", "cleaned_sales.csv")
     df = pd.read_csv(data_path)
     df["item_id"] = df["item_id"].astype("category")
@@ -134,15 +127,18 @@ def train_boosted_model(quantile_alpha: float, model_name: str):
         "store_id",
     ]
 
-    train_df, val_df = groupwise_time_split(df)
+    df = validate_features(df, FEATURES)
+
+    train_df, val_df = groupwise_time_split(df, val_days=28, min_train_days=90)
+    print(f"Training groups: {train_df.groupby(['item_id', 'store_id'], observed=True).ngroups}")
+    print(f"Validation samples: {len(val_df)}")
+
     X_train, y_train = train_df[FEATURES], train_df["sales"]
     X_val, y_val = val_df[FEATURES], val_df["sales"]
 
-    # ---------------- Model ----------------
-    cfg = QUANTILE_CONFIGS[quantile_alpha]
+    cfg = POINT_FORECAST_CONFIG
     model = xgboost.XGBRegressor(
-        objective="reg:quantileerror",
-        quantile_alpha=quantile_alpha,
+        objective="reg:squarederror",
         tree_method="hist",
         enable_categorical=True,
         random_state=42,
@@ -151,106 +147,114 @@ def train_boosted_model(quantile_alpha: float, model_name: str):
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
-    # model predictions
     y_pred = model.predict(X_val)
 
-    # Ensure no duplicate 'pred' columns from previous runs
-    if "pred" in val_df.columns:
-        val_df = val_df.drop(columns="pred")
+    baseline_preds = compute_baseline_predictions(train_df, val_df)
 
-    val_eval = val_df.copy()
-    val_eval["pred"] = y_pred
-    val_eval["covered"] = (val_eval["sales"] <= y_pred).astype(int)
+    mae_model = mean_absolute_error(y_val, y_pred)
+    rmse_model = np.sqrt(mean_squared_error(y_val, y_pred))
 
-    # -------------- Baseline --------------
-    full_df = pd.concat([train_df, val_eval], ignore_index=True)
-    baseline_series = rolling_quantile_baseline(full_df, quantile_alpha).loc[val_eval.index]
-    val_eval["baseline_pred"] = baseline_series
+    mae_baseline = mean_absolute_error(y_val, baseline_preds)
+    rmse_baseline = np.sqrt(mean_squared_error(y_val, baseline_preds))
 
-    mask = ~val_eval["baseline_pred"].isna()
-    val_masked = val_eval[mask].copy()
+    individual_mae_model, individual_mae_baseline, individual_se_model, individual_se_baseline = \
+        compute_individual_losses(y_val, y_pred, baseline_preds)
 
-    bp = val_masked["baseline_pred"]
-    if bp.ndim > 1:
-        bp = bp.iloc[:, 0]
+    val_df_reset = val_df.reset_index(drop=True)
+    sample_size = min(100, len(val_df_reset))
+    sample_indices = np.random.choice(len(val_df_reset), sample_size, replace=False)
 
-    # ---------------- Metrics -------------
-    avg_cov = (
-        val_eval.groupby(["item_id", "store_id"], observed=True)["covered"].mean().mean()
-    )
-    mae = mean_absolute_error(y_val, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-    pinball = compute_pinball_loss(y_val, y_pred, quantile_alpha)
-    grp_pinball = groupwise_pinball_loss(val_eval, quantile_alpha)
+    sample_records = []
+    for idx in sample_indices:
+        record = {
+            "item_id": str(val_df_reset.iloc[idx]["item_id"]),
+            "store_id": str(val_df_reset.iloc[idx]["store_id"]),
+            "actual_sales": float(y_val.iloc[idx]),
+            "model_prediction": float(y_pred[idx]),
+            "baseline_prediction": float(baseline_preds[idx]),
+            "model_mae": float(individual_mae_model[idx]),
+            "baseline_mae": float(individual_mae_baseline[idx]),
+            "model_se": float(individual_se_model[idx]),
+            "baseline_se": float(individual_se_baseline[idx]),
+            "mae_improvement": float(individual_mae_baseline[idx] - individual_mae_model[idx]),
+            "se_improvement": float(individual_se_baseline[idx] - individual_se_model[idx])
+        }
+        sample_records.append(record)
 
-    # Baseline (masked rows)
-    baseline_mae = mean_absolute_error(val_masked["sales"], bp)
-    baseline_rmse = np.sqrt(mean_squared_error(val_masked["sales"], bp))
-    baseline_pinball = compute_pinball_loss(val_masked["sales"], bp, quantile_alpha)
-
-    base_df_for_loss = val_masked.rename(columns={"baseline_pred": "pred"})
-    baseline_grp_pinball = groupwise_pinball_loss(base_df_for_loss, quantile_alpha)
-    baseline_cov = (
-        base_df_for_loss.groupby(["item_id", "store_id"], observed=True)["covered"].mean().mean()
-    )
-
-    # ---------------- Logging -------------
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = os.getenv("LOG_DIR", "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"{model_name}_{timestamp}.txt")
-
-    samples = (
-        val_eval.groupby(["item_id", "store_id"], sort=False, observed=True)
-        .apply(lambda g: g.sample(1, random_state=42))
-        .reset_index(drop=True)[
-            ["item_id", "store_id", "sales", "pred", "baseline_pred"]
-        ]
-        .to_dict(orient="records")
-    )
+    log_path = os.path.join(log_dir, f"{model_name}_{timestamp}.json")
 
     log_content = {
         "timestamp": timestamp,
         "model_name": model_name,
-        "quantile_alpha": quantile_alpha,
+        "model_type": "point_forecast",
+        "data_stats": {
+            "train_samples": len(train_df),
+            "val_samples": len(val_df),
+            "train_groups": train_df.groupby(['item_id', 'store_id']).ngroups
+        },
         "hyperparameters": cfg,
         "metrics": {
             "model": {
-                "avg_groupwise_coverage": avg_cov,
-                "mae": mae,
-                "rmse": rmse,
-                "pinball_loss": pinball,
-                "groupwise_pinball_loss": grp_pinball,
+                "mae": float(mae_model),
+                "rmse": float(rmse_model),
             },
             "baseline": {
-                "avg_groupwise_coverage": baseline_cov,
-                "mae": baseline_mae,
-                "rmse": baseline_rmse,
-                "pinball_loss": baseline_pinball,
-                "groupwise_pinball_loss": baseline_grp_pinball,
+                "mae": float(mae_baseline),
+                "rmse": float(rmse_baseline),
             },
+            "improvement": {
+                "mae_reduction": float((mae_baseline - mae_model) / mae_baseline),
+                "rmse_reduction": float((rmse_baseline - rmse_model) / rmse_baseline)
+            }
         },
-        "sample_predictions": samples,
+        "sample_predictions": sample_records,
     }
 
     with open(log_path, "w", encoding="utf-8") as f:
         json.dump(log_content, f, indent=2)
-    print(f"[INFO] Logged → {log_path}")
+    print(f"[INFO] Results logged to: {log_path}")
 
-    # Optionally save trained booster
+    print(f"\n=== {model_name} (Point Forecast) ===")
+    print(f"Model    - MAE: {mae_model:.3f}, RMSE: {rmse_model:.3f}")
+    print(f"Baseline - MAE: {mae_baseline:.3f}, RMSE: {rmse_baseline:.3f}")
+    print(f"MAE improvement: {(mae_baseline - mae_model) / mae_baseline:.1%}")
+    print(f"RMSE improvement: {(rmse_baseline - rmse_model) / rmse_baseline:.1%}")
+
     save_dir = os.getenv("SAVED_MODELS")
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         model.save_model(os.path.join(save_dir, f"{model_name}.json"))
 
+    return model
 
-# ---------------------------------------------------------------------------
-# Run both quantiles
-# ---------------------------------------------------------------------------
-def train_all_quantiles():
-    train_boosted_model(0.9, "xgb_quantile_90")
-    train_boosted_model(0.5, "xgb_quantile_50")
+
+def add_prediction_intervals(model, X_val, confidence_level: float = 0.95):
+    """
+    Add prediction intervals to point forecasts
+    """
+    point_forecast = model.predict(X_val)
+
+    # TODO: Implement interval estimation logic here
+    lower_bound = None  # TODO: Implement lower bound calculation
+    upper_bound = None  # TODO: Implement upper bound calculation
+    interval_width = None  # TODO: Calculate interval width
+
+    return {
+        'point_forecast': point_forecast,
+        'lower_bound': lower_bound,
+        'upper_bound': upper_bound,
+        'interval_width': interval_width
+    }
+
+
+def train_point_forecast():
+    """Train point forecasting model"""
+    model = train_point_forecast_model("xgb_point_forecast")
+    return model
 
 
 if __name__ == "__main__":
-    train_all_quantiles()
+    train_point_forecast()
