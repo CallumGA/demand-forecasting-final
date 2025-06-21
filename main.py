@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from src import data_preprocess_validation, xgboost_model_training
+from src import xgboost_model_training
 
 """
 **************************************************

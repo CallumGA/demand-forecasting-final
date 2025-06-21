@@ -13,6 +13,9 @@ import joblib
 ****************************************************************
 """
 
+# TODO: go over each function with formulas/explanation comments
+# TODO: remove the logging/validation code - we can use this just for training, prediction in prediction - but keep the json of results
+
 # ---------------------------------------------------------------------------
 # Tuned via Optuna
 # ---------------------------------------------------------------------------
