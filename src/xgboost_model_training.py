@@ -5,15 +5,16 @@ import numpy as np
 import pandas as pd
 import xgboost
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+import joblib
 
 """
 ****************************************************************
- Point-Forecast XGBoost trainer
+ Point-Forecast XGBoost trainer (with groupwise interval logic)
 ****************************************************************
 """
 
 # ---------------------------------------------------------------------------
-# Tuned hyper-parameters for the point model
+# Tuned via Optuna
 # ---------------------------------------------------------------------------
 POINT_FORECAST_CONFIG = {
     "max_depth": 7,
@@ -29,14 +30,11 @@ POINT_FORECAST_CONFIG = {
 
 
 # ---------------------------------------------------------------------------
-# Train / validation split
+# Train / validation split (based on day count in the product/location group)
 # ---------------------------------------------------------------------------
-def groupwise_time_split(df: pd.DataFrame,
-                         val_days: int = 28,
-                         min_train_days: int = 90):
+def groupwise_time_split(df: pd.DataFrame, val_days: int = 28, min_train_days: int = 90):
     train, val = [], []
-    for name, g in df.groupby(["item_id", "store_id"],
-                              sort=False, observed=True):
+    for name, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
         g = g.sort_values("d")
         if len(g) >= min_train_days + val_days:
             train.append(g.iloc[:-val_days])
@@ -49,30 +47,12 @@ def groupwise_time_split(df: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
-# Per-row loss decomposition
+# Baseline prediction using rolling mean (so we know what to compare predictions to)
 # ---------------------------------------------------------------------------
-def compute_individual_losses(y_true, y_pred_model, y_pred_base):
-    y_true  = np.asarray(y_true, dtype=float).ravel()
-    y_pm    = np.asarray(y_pred_model, dtype=float).ravel()
-    y_pb    = np.asarray(y_pred_base,  dtype=float).ravel()
-
-    mae_m   = np.abs(y_true - y_pm)
-    mae_b   = np.abs(y_true - y_pb)
-    se_m    = (y_true - y_pm) ** 2
-    se_b    = (y_true - y_pb) ** 2
-    return mae_m, mae_b, se_m, se_b
-
-
-# ---------------------------------------------------------------------------
-# Rolling-mean baseline
-# ---------------------------------------------------------------------------
-def compute_baseline_predictions(train_df: pd.DataFrame,
-                                 val_df: pd.DataFrame,
-                                 window: int = 28):
+def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, window: int = 28):
     preds = []
     for key, v in val_df.groupby(["item_id", "store_id"], observed=True):
-        g = train_df.loc[(train_df["item_id"] == key[0]) &
-                         (train_df["store_id"] == key[1])].sort_values("d")
+        g = train_df.loc[(train_df["item_id"] == key[0]) & (train_df["store_id"] == key[1])].sort_values("d")
         baseline = g["sales"].mean() if len(g) < window else (
             g["sales"].rolling(window, min_periods=window).mean().iloc[-1])
         preds.extend([baseline] * len(v))
@@ -80,37 +60,55 @@ def compute_baseline_predictions(train_df: pd.DataFrame,
 
 
 # ---------------------------------------------------------------------------
-# Split-conformal prediction interval
+# Groupwise conformal prediction intervals (for each product/location group, calculate interval bands)
 # ---------------------------------------------------------------------------
-def add_prediction_intervals(model, X_val, X_train, y_train,
-                             confidence_level=0.95, calib_frac=0.10):
+def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df,
+                                       confidence_level=0.95, calib_frac=0.10):
     point = model.predict(X_val)
-
-    rng     = np.random.default_rng(42)
-    idx     = rng.choice(len(X_train), int(calib_frac*len(X_train)), replace=False)
-    abs_res = np.abs(y_train.iloc[idx] - model.predict(X_train.iloc[idx]))
+    lower = np.zeros_like(point)
+    upper = np.zeros_like(point)
+    interval_width = np.zeros_like(point)
+    epsilon = {}
 
     alpha = 1 - confidence_level
-    eps   = np.quantile(abs_res, 1 - alpha/2)
+    val_df = val_df.copy()
+    val_df["pred"] = point
+    val_df = val_df.reset_index(drop=True)
 
-    lower = point - eps
-    upper = point + eps
-    lower = np.maximum(0, lower)
+    for key, group in val_df.groupby(["item_id", "store_id"], observed=True):
+        idx_train = ((train_df["item_id"] == key[0]) & (train_df["store_id"] == key[1]))
+        X_tg = X_train[idx_train]
+        y_tg = y_train[idx_train]
+
+        if len(y_tg) < 10:
+            eps = 0.0
+        else:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(X_tg), max(1, int(calib_frac * len(X_tg))), replace=False)
+            abs_res = np.abs(y_tg.iloc[idx] - model.predict(X_tg.iloc[idx]))
+            eps = np.quantile(abs_res, 1 - alpha / 2)
+
+        group_idx = val_df[(val_df["item_id"] == key[0]) & (val_df["store_id"] == key[1])].index
+        lower[group_idx] = np.maximum(0, val_df.loc[group_idx, "pred"] - eps)
+        upper[group_idx] = val_df.loc[group_idx, "pred"] + eps
+        interval_width[group_idx] = upper[group_idx] - lower[group_idx]
+        epsilon[str(key)] = eps
 
     return {
         "point_forecast": point,
-        "lower_bound":    lower,
-        "upper_bound":    upper,
-        "interval_width": upper - lower,
-        "epsilon":        eps,
+        "lower_bound": lower,
+        "upper_bound": upper,
+        "interval_width": interval_width,
+        "epsilon": epsilon,
         "confidence_level": confidence_level,
     }
+
 
 def evaluate_prediction_intervals(y_true, intv):
     within = (y_true >= intv["lower_bound"]) & (y_true <= intv["upper_bound"])
     return {
-        "coverage":          float(within.mean()),
-        "average_width":     float(intv["interval_width"].mean()),
+        "coverage": float(within.mean()),
+        "average_width": float(intv["interval_width"].mean()),
         "expected_coverage": intv["confidence_level"],
     }
 
@@ -119,9 +117,9 @@ def evaluate_prediction_intervals(y_true, intv):
 # Core training routine
 # ---------------------------------------------------------------------------
 def train_point_forecast_model(model_name: str):
-    data_path = os.getenv("CLEANED_SALES_DATA", "cleaned_sales.csv")
-    df        = pd.read_csv(data_path)
-    df["item_id"]  = df["item_id"].astype("category")
+    data_path = os.getenv("CLEANED_SALES_DATA", "sales_cleaned.csv")
+    df = pd.read_csv(data_path)
+    df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
 
     FEATURES = [
@@ -134,7 +132,7 @@ def train_point_forecast_model(model_name: str):
     print(f"Validation rows : {len(val_df)}")
 
     X_train, y_train = train_df[FEATURES], train_df["sales"]
-    X_val,   y_val   = val_df[FEATURES],   val_df["sales"]
+    X_val, y_val = val_df[FEATURES], val_df["sales"]
 
     model = xgboost.XGBRegressor(
         objective="reg:squarederror",
@@ -147,27 +145,27 @@ def train_point_forecast_model(model_name: str):
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
     y_pred = model.predict(X_val)
 
-    intv   = add_prediction_intervals(model, X_val, X_train, y_train, 0.95)
+    intv = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df, 0.95)
     intv_m = evaluate_prediction_intervals(y_val, intv)
 
     y_base = compute_baseline_predictions(train_df, val_df)
     mae_m, rmse_m = mean_absolute_error(y_val, y_pred), np.sqrt(mean_squared_error(y_val, y_pred))
     mae_b, rmse_b = mean_absolute_error(y_val, y_base), np.sqrt(mean_squared_error(y_val, y_base))
 
-    rng   = np.random.default_rng(0)
-    idxs  = rng.choice(len(val_df), min(100, len(val_df)), replace=False)
+    rng = np.random.default_rng(0)
+    idxs = rng.choice(len(val_df), min(100, len(val_df)), replace=False)
     samples = [{
         "item_id": str(val_df.iloc[i]["item_id"]),
         "store_id": str(val_df.iloc[i]["store_id"]),
         "actual": float(y_val.iloc[i]),
-        "pred":   float(y_pred[i]),
-        "base":   float(y_base[i]),
-        "lb":     float(intv["lower_bound"][i]),
-        "ub":     float(intv["upper_bound"][i]),
+        "pred": float(y_pred[i]),
+        "base": float(y_base[i]),
+        "lb": float(intv["lower_bound"][i]),
+        "ub": float(intv["upper_bound"][i]),
         "in_band": bool(intv["lower_bound"][i] <= y_val.iloc[i] <= intv["upper_bound"][i]),
     } for i in idxs]
 
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     logp = os.path.join(os.getenv("LOG_DIR", "logs"), f"{model_name}_{ts}.json")
     os.makedirs(os.path.dirname(logp), exist_ok=True)
     with open(logp, "w", encoding="utf-8") as f:
@@ -175,9 +173,9 @@ def train_point_forecast_model(model_name: str):
             "timestamp": ts,
             "model_name": model_name,
             "metrics": {
-                "mae": mae_m,  "rmse": rmse_m,
+                "mae": mae_m, "rmse": rmse_m,
                 "baseline_mae": mae_b, "baseline_rmse": rmse_b,
-                "interval": intv_m | {"epsilon": float(intv["epsilon"])},
+                "interval": intv_m | {"epsilon": "groupwise", "per_group_eps": intv["epsilon"]},
             },
             "sample_predictions": samples,
         }, f, indent=2)
@@ -187,8 +185,7 @@ def train_point_forecast_model(model_name: str):
 
     if os.getenv("SAVED_MODELS"):
         os.makedirs(os.getenv("SAVED_MODELS"), exist_ok=True)
-        model.save_model(os.path.join(os.getenv("SAVED_MODELS"), f"{model_name}.json"))
-
+        joblib.dump(model, os.path.join(os.getenv("SAVED_MODELS"), f"{model_name}.joblib"))
     return model
 
 
@@ -197,6 +194,7 @@ def train_point_forecast_model(model_name: str):
 # ---------------------------------------------------------------------------
 def train_point_forecast():
     return train_point_forecast_model("xgb_point_forecast")
+
 
 if __name__ == "__main__":
     train_point_forecast()
