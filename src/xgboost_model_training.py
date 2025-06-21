@@ -12,11 +12,13 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 ****************************************************************
 """
 
-# TODO: add 10th an 90th quantile regression models for "uncertainty"
+# TODO: add interval predictions
+# TODO: optuna for hyperparams
 # TODO: go through each function/calculation and document/explain for future
 # TODO: prepare the cleaned csv for what we submit code-wise (just stripped down training code)
 # TODO: Make predictions on the actual evaluation data
 # TODO: graph samples and document the actual predictions
+# TODO: finish report
 
 
 POINT_FORECAST_CONFIG = {
@@ -251,7 +253,6 @@ def add_prediction_intervals(model, X_val, confidence_level: float = 0.95):
 
 
 def train_point_forecast():
-    """Train point forecasting model"""
     model = train_point_forecast_model("xgb_point_forecast")
     return model
 

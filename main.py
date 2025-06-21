@@ -26,10 +26,6 @@ def main():
     print("Training model...\n")
     xgboost_model_training.train_point_forecast()
 
-    # Step 4: Forecasting
-    print("Forecasting next 28 days...\n")
-    # forecast.run_forecast(model)
-
     print("\nML pipeline completed successfully.\n")
 
 if __name__ == "__main__":
