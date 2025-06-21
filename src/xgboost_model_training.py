@@ -27,6 +27,7 @@ POINT_FORECAST_CONFIG = {
     "reg_alpha": 0.1,
 }
 
+
 # ---------------------------------------------------------------------------
 # Train / validation split
 # ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ def groupwise_time_split(df: pd.DataFrame,
         raise ValueError("No groups have sufficient data for training.")
     return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
 
+
 # ---------------------------------------------------------------------------
 # Per-row loss decomposition
 # ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ def compute_individual_losses(y_true, y_pred_model, y_pred_base):
     se_m    = (y_true - y_pm) ** 2
     se_b    = (y_true - y_pb) ** 2
     return mae_m, mae_b, se_m, se_b
+
 
 # ---------------------------------------------------------------------------
 # Rolling-mean baseline
@@ -74,6 +77,7 @@ def compute_baseline_predictions(train_df: pd.DataFrame,
             g["sales"].rolling(window, min_periods=window).mean().iloc[-1])
         preds.extend([baseline] * len(v))
     return np.array(preds)
+
 
 # ---------------------------------------------------------------------------
 # Split-conformal prediction interval
@@ -109,6 +113,7 @@ def evaluate_prediction_intervals(y_true, intv):
         "average_width":     float(intv["interval_width"].mean()),
         "expected_coverage": intv["confidence_level"],
     }
+
 
 # ---------------------------------------------------------------------------
 # Core training routine
@@ -185,6 +190,7 @@ def train_point_forecast_model(model_name: str):
         model.save_model(os.path.join(os.getenv("SAVED_MODELS"), f"{model_name}.json"))
 
     return model
+
 
 # ---------------------------------------------------------------------------
 # Entry point
