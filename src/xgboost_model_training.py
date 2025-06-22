@@ -57,10 +57,12 @@ def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, w
 
 
 # *** Add prediction bands for each product/location group ***
-# 1. For each product/location group take 10% of the training data rows
-# 2. Compute the residuals for this subset
-# 3. Compute the ε (epsilon)
-# 4. Compute the lower and upper bounds: Lower = max(0, ŷ − ε) Upper = ŷ + ε (enforce non negativity for lower bound)
+#  We use the "error" from the training model for each product/location pair and + or - from the new prediction to get the interval band for new predictions
+#  Compute the ε:
+#       abs_res = (yi - ŷi), where yi = actual sales from training data (per item/location), ŷi = predicted sales from training data (per item/location)
+#       ε = np.quantile(abs_res, 1 - alpha / 2)
+#  Derive the lower and upper bounds from ε:
+#       Lower = max(0, ŷ_new − ε), Upper = (ŷ_new + ε), where ŷ_new = new predicted sales,  ε = epsilon
 def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df,
                                        confidence_level=0.95, calib_frac=0.10):
     point = model.predict(X_val)
@@ -145,12 +147,12 @@ def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
     y_pred = model.predict(X_val)
-    intv = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df, 0.95)
+    intervals = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df, 0.95)
 
     metrics = {
         "mae": mean_absolute_error(y_val, y_pred),
         "rmse": np.sqrt(mean_squared_error(y_val, y_pred)),
-        "interval": evaluate_prediction_intervals(y_val, intv),
+        "interval": evaluate_prediction_intervals(y_val, intervals),
     }
 
     if os.getenv("SAVED_MODELS"):
