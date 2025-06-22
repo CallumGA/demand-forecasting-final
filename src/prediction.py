@@ -174,9 +174,23 @@ sample_df["in_band"] = (
 )
 sample_df.to_csv(sample_path, index=False)
 
+# --- Save full prediction results ---
+full_path = os.path.join(log_dir, f"xgb_point_forecast_eval_predictions_full_{timestamp}.csv")
+full_df = df_merged[[
+    "item_id", "store_id", "d", "actual_sales", "predicted_sales",
+    "baseline_pred", "lower_bound", "upper_bound"
+]].copy()
+full_df["in_band"] = (
+    (full_df["actual_sales"] >= full_df["lower_bound"]) &
+    (full_df["actual_sales"] <= full_df["upper_bound"])
+)
+full_df.to_csv(full_path, index=False)
+print(f"📦 Full predictions saved: {full_path}")
+
 # --- Print summary ---
 print(f"📁 Summary saved: {summary_path}")
-print(f"📄 Predictions saved: {sample_path}")
+print(f"📄 Sample predictions saved: {sample_path}")
+print(f"📄 Full Predictions saved: {sample_path}")
 print(f"📊 MAE: {mae:.4f} | RMSE: {rmse:.4f}")
 print(f"🎯 Interval Coverage: {interval_metrics['coverage']:.4f}")
 print(f"📏 Avg Width: {interval_metrics['average_width']:.4f}")
