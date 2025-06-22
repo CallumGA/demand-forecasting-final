@@ -13,12 +13,8 @@ import joblib
 ****************************************************************
 """
 
-# TODO: go over each function with formulas/explanation comments
-# TODO: remove the logging/validation code - we can use this just for training, prediction in prediction - but keep the json of results
 
-# ---------------------------------------------------------------------------
-# Tuned via Optuna
-# ---------------------------------------------------------------------------
+# static hyperparameters
 POINT_FORECAST_CONFIG = {
     "max_depth": 7,
     "learning_rate": 0.1,
@@ -32,9 +28,8 @@ POINT_FORECAST_CONFIG = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Train / validation split (based on day count in the product/location group)
-# ---------------------------------------------------------------------------
+# *** Split the dataset for training/validation ***
+# from each product/location group we must have at least 90 training days and 28 validation days
 def groupwise_time_split(df: pd.DataFrame, val_days: int = 28, min_train_days: int = 90):
     train, val = [], []
     for name, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
@@ -49,9 +44,8 @@ def groupwise_time_split(df: pd.DataFrame, val_days: int = 28, min_train_days: i
     return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
 
 
-# ---------------------------------------------------------------------------
-# Baseline prediction using rolling mean (so we know what to compare predictions to)
-# ---------------------------------------------------------------------------
+# *** Compute the naive baseline predictions ***
+# from the training data, we take the last 28 days sales (rolling mean) and calculate the mean sales to use for calculating naive baseline MAE & RMSE
 def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, window: int = 28):
     preds = []
     for key, v in val_df.groupby(["item_id", "store_id"], observed=True):
@@ -62,9 +56,11 @@ def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, w
     return np.array(preds)
 
 
-# ---------------------------------------------------------------------------
-# Groupwise conformal prediction intervals (for each product/location group, calculate interval bands)
-# ---------------------------------------------------------------------------
+# *** Add prediction bands for each product/location group ***
+# 1. For each product/location group take 10% of the training data rows
+# 2. Compute the residuals for this subset
+# 3. Compute the ε (epsilon)
+# 4. Compute the lower and upper bounds: Lower = max(0, ŷ − ε) Upper = ŷ + ε (enforce non negativity for lower bound)
 def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df,
                                        confidence_level=0.95, calib_frac=0.10):
     point = model.predict(X_val)
@@ -107,6 +103,7 @@ def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, t
     }
 
 
+# *** Evaluate our interval bands to see how well they performed for evaluation ***
 def evaluate_prediction_intervals(y_true, intv):
     within = (y_true >= intv["lower_bound"]) & (y_true <= intv["upper_bound"])
     return {
@@ -116,23 +113,23 @@ def evaluate_prediction_intervals(y_true, intv):
     }
 
 
-# ---------------------------------------------------------------------------
-# Core training routine
-# ---------------------------------------------------------------------------
-def train_point_forecast_model(model_name: str):
+# *** Train the model ***
+# 1. Split features and target (sales we want to predict) for both training & validation
+# 2. Define the model ie; squared error, tree method, and pass in the hyperparameters
+# 3. Fit the model with training data and validation data
+# 4. Make our predictions
+# 5. Create the interval bands and calculate evaluation metrics
+def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
     data_path = os.getenv("CLEANED_SALES_DATA", "sales_cleaned.csv")
     df = pd.read_csv(data_path)
     df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
-
     FEATURES = [
         "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
         "day_of_week", "month", "item_id", "store_id",
     ]
 
     train_df, val_df = groupwise_time_split(df, 28, 90)
-    print(f"Training groups : {train_df.groupby(['item_id','store_id'], observed=True).ngroups}")
-    print(f"Validation rows : {len(val_df)}")
 
     X_train, y_train = train_df[FEATURES], train_df["sales"]
     X_val, y_val = val_df[FEATURES], val_df["sales"]
@@ -146,55 +143,24 @@ def train_point_forecast_model(model_name: str):
         **POINT_FORECAST_CONFIG,
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+
     y_pred = model.predict(X_val)
-
     intv = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df, 0.95)
-    intv_m = evaluate_prediction_intervals(y_val, intv)
 
-    y_base = compute_baseline_predictions(train_df, val_df)
-    mae_m, rmse_m = mean_absolute_error(y_val, y_pred), np.sqrt(mean_squared_error(y_val, y_pred))
-    mae_b, rmse_b = mean_absolute_error(y_val, y_base), np.sqrt(mean_squared_error(y_val, y_base))
-
-    rng = np.random.default_rng(0)
-    idxs = rng.choice(len(val_df), min(100, len(val_df)), replace=False)
-    samples = [{
-        "item_id": str(val_df.iloc[i]["item_id"]),
-        "store_id": str(val_df.iloc[i]["store_id"]),
-        "actual": float(y_val.iloc[i]),
-        "pred": float(y_pred[i]),
-        "base": float(y_base[i]),
-        "lb": float(intv["lower_bound"][i]),
-        "ub": float(intv["upper_bound"][i]),
-        "in_band": bool(intv["lower_bound"][i] <= y_val.iloc[i] <= intv["upper_bound"][i]),
-    } for i in idxs]
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logp = os.path.join(os.getenv("LOG_DIR", "logs"), f"{model_name}_{ts}.json")
-    os.makedirs(os.path.dirname(logp), exist_ok=True)
-    with open(logp, "w", encoding="utf-8") as f:
-        json.dump({
-            "timestamp": ts,
-            "model_name": model_name,
-            "metrics": {
-                "mae": mae_m, "rmse": rmse_m,
-                "baseline_mae": mae_b, "baseline_rmse": rmse_b,
-                "interval": intv_m | {"epsilon": "groupwise", "per_group_eps": intv["epsilon"]},
-            },
-            "sample_predictions": samples,
-        }, f, indent=2)
-    print(f"[INFO] log written → {logp}")
-    print(f"MAE {mae_m:.3f}  vs base {mae_b:.3f}  |  RMSE {rmse_m:.3f} vs {rmse_b:.3f}")
-    print(f"95 % coverage {intv_m['coverage']:.3f}  (target 0.95)")
+    metrics = {
+        "mae": mean_absolute_error(y_val, y_pred),
+        "rmse": np.sqrt(mean_squared_error(y_val, y_pred)),
+        "interval": evaluate_prediction_intervals(y_val, intv),
+    }
 
     if os.getenv("SAVED_MODELS"):
         os.makedirs(os.getenv("SAVED_MODELS"), exist_ok=True)
         joblib.dump(model, os.path.join(os.getenv("SAVED_MODELS"), f"{model_name}.joblib"))
-    return model
+
+    return model, metrics
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# *** Entry point ***
 def train_point_forecast():
     return train_point_forecast_model("xgb_point_forecast")
 
