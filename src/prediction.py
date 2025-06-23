@@ -6,6 +6,13 @@ import os
 from datetime import datetime
 import csv
 
+"""
+****************************************************************
+ Point-Forecast & interval prediction code
+ Note: Run standalone after xgboost_model_training.py
+****************************************************************
+"""
+
 
 # the features xgboost trees will branch on
 FEATURES = [
