@@ -200,11 +200,3 @@ full_df["in_band"] = (
 )
 full_df.to_csv(full_path, index=False)
 print(f"📦 Full predictions saved: {full_path}")
-
-print(f"📁 Summary saved: {summary_path}")
-print(f"📄 Sample predictions saved: {sample_path}")
-print(f"📄 Full Predictions saved: {sample_path}")
-print(f"📊 MAE: {mae:.4f} | RMSE: {rmse:.4f}")
-print(f"🎯 Interval Coverage: {interval_metrics['coverage']:.4f}")
-print(f"📏 Avg Width: {interval_metrics['average_width']:.4f}")
-print(f"🧪 Baseline MAE: {baseline_mae:.4f} | RMSE: {baseline_rmse:.4f}")
