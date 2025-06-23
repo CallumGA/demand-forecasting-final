@@ -8,7 +8,7 @@ import csv
 
 """
 ****************************************************************
- Point-Forecast & interval prediction code
+ Point-Forecast w/ Groupwise Interval Model Predictions
  Note: Run standalone after xgboost_model_training.py
 ****************************************************************
 """

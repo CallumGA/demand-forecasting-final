@@ -7,8 +7,8 @@ import joblib
 
 """
 ****************************************************************
- Point-Forecast XGBoost trainer (with groupwise interval logic)
- Note: Run standalone before prediciton.py
+ Point-Forecast w/ Groupwise Interval Model Trainer
+ Note: Run standalone before xgboost_prediciton.py
 ****************************************************************
 """
 

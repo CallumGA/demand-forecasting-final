@@ -2,7 +2,7 @@ from lightgbm import LGBMRegressor
 
 """
 ****************************************************************
- Quantile Random Forest Model Training
- Note: Run standalone before randomforest_prediciton.py
+ Quantile Random Forest Model Predictions
+ Note: Run standalone after randomforest_prediciton.py
 ****************************************************************
 """
