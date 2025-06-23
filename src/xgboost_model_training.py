@@ -12,6 +12,7 @@ import joblib
 ****************************************************************
 """
 
+# TODO: re do is_event_day.....this is constant....it is harming my model results - make accurate then re-train/predict
 
 # static hyperparameters
 POINT_FORECAST_CONFIG = {

@@ -1,67 +1,56 @@
-import pandas as pd
-import numpy as np
-from quantile_forest import RandomForestQuantileRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OrdinalEncoder
+import os
+import h2o
+from h2o.estimators.random_forest import H2ORandomForestEstimator
 
 """
 ****************************************************************
- Quantile Random Forest Model Training
- Note: Run standalone before randomforest_prediciton.py
+ Quantile Random Forest Model Training (Stratified + Fast)
 ****************************************************************
 """
 
+# TODO: must be trained on the same data split as xgboost model (groupwise-time split)
+# TODO: comment and explain each function
+# TODO: compute baseline
+# TODO: potentially add interval predictions
 
-# load cleaned input dataset
-df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/sales_cleaned.csv")  # Replace this
 
-# encode the categorical features
-ordinal = OrdinalEncoder()
-df[["item_id", "store_id"]] = ordinal.fit_transform(df[["item_id", "store_id"]])
+def train_and_evaluate_h2o_rf(csv_file, target_col='sales', validation_split=0.2):
+    h2o.init(max_mem_size="16G", nthreads=-1)
 
-# select all our features for training
-FEATURES = [
-    "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
-    "day_of_week", "month", "item_id", "store_id"
-]
-TARGET = "sales"
+    print("Loading data...")
+    df = h2o.import_file(csv_file)
+    print(f"Dataset shape: {df.shape}")
 
-# assign features as x and target as y (sales)
-X = df[FEATURES]
-y = df[TARGET]
+    categorical_cols = ['item_id', 'store_id']
+    for col in categorical_cols:
+        if col in df.columns:
+            df[col] = df[col].asfactor()
 
-# first we want to split our training data and validation data, each with their own inputs/outputs
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=False)
+    train, test = df.split_frame(ratios=[1 - validation_split], seed=42)
+    feature_cols = [col for col in df.columns if col != target_col]
 
-# train quantile random forest regressor
-qrf = RandomForestQuantileRegressor(
-    n_estimators=100,
-    max_depth=10,
-    min_samples_leaf=10,
-    random_state=42
-)
-qrf.fit(X_train, y_train)
+    print("Training Random Forest...")
+    rf = H2ORandomForestEstimator(
+        ntrees=100,
+        max_depth=20,
+        min_rows=10,
+        seed=42
+    )
+    rf.train(x=feature_cols, y=target_col, training_frame=train)
 
-# we want to predict 3 quantiles, 0.1, 0.5, 0.9
-quantiles = [0.1, 0.5, 0.9]
-preds = qrf.predict(X_val, quantiles=quantiles)
-q10, q50, q90 = preds[:, 0], preds[:, 1], preds[:, 2]
+    print("Making predictions...")
+    predictions = rf.predict(test)
 
-# MAE and RMSE evaluation of the QRF model
-mae = mean_absolute_error(y_val, q50)
-rmse = np.sqrt(mean_squared_error(y_val, q50))
+    test_rmse = rf.rmse(valid=False, train=False)
+    test_mae = rf.mae(valid=False, train=False)
 
-print(f"Q50 (median) MAE:  {mae:.4f}")
-print(f"Q50 (median) RMSE: {rmse:.4f}")
+    print(f"\nResults:\nRMSE: {test_rmse:.4f}\nMAE: {test_mae:.4f}")
 
-# save outputs
-results = X_val.copy()
-results["actual"] = y_val.values
-results["q10"] = q10
-results["q50"] = q50
-results["q90"] = q90
-results["in_band"] = (results["actual"] >= results["q10"]) & (results["actual"] <= results["q90"])
+    h2o.shutdown(prompt=False)
+    return test_rmse, test_mae
 
-results.to_csv("quantile_rf_forecast_results.csv", index=False)
-print("📁 Results saved to: quantile_rf_forecast_results.csv")
+
+if __name__ == "__main__":
+    file_path = os.path.expanduser("~/h2o_data/sales_cleaned.csv")
+    rmse, mae = train_and_evaluate_h2o_rf(file_path)
+    print(f"Final - RMSE: {rmse:.4f}, MAE: {mae:.4f}")
