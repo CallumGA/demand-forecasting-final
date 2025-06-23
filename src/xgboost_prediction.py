@@ -107,7 +107,7 @@ intervals = add_groupwise_prediction_intervals_final(
 df_merged["lower_bound"] = intervals["lower_bound"]
 df_merged["upper_bound"] = intervals["upper_bound"]
 
-# evaluate the forecasts made
+# calculate MAE and RMSE against actual sales for actual final predictions
 mae = mean_absolute_error(df_merged["actual_sales"], df_merged["predicted_sales"])
 rmse = np.sqrt(mean_squared_error(df_merged["actual_sales"], df_merged["predicted_sales"]))
 
@@ -146,6 +146,7 @@ def compute_eval_baseline_predictions(train_df, eval_df, window=28):
         preds.extend([baseline] * len(g_eval))
     return np.array(preds)
 
+# calculate MAE and RMSE against actual sales for baseline predictions
 df_merged["baseline_pred"] = compute_eval_baseline_predictions(df_train, df_merged)
 baseline_mae = mean_absolute_error(df_merged["actual_sales"], df_merged["baseline_pred"])
 baseline_rmse = np.sqrt(mean_squared_error(df_merged["actual_sales"], df_merged["baseline_pred"]))
