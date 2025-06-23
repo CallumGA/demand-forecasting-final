@@ -13,51 +13,49 @@ from sklearn.preprocessing import OrdinalEncoder
 """
 
 
-# --- Load your cleaned dataset ---
+# load cleaned input dataset
 df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/sales_cleaned.csv")  # Replace this
 
-# --- Cast and encode categorical columns (ordinal encoding is RAM-safe) ---
+# encode the categorical features
 ordinal = OrdinalEncoder()
 df[["item_id", "store_id"]] = ordinal.fit_transform(df[["item_id", "store_id"]])
 
-# --- Select features ---
+# select all our features for training
 FEATURES = [
     "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
     "day_of_week", "month", "item_id", "store_id"
 ]
 TARGET = "sales"
 
+# assign features as x and target as y (sales)
 X = df[FEATURES]
 y = df[TARGET]
 
-# --- Optional: downsample for initial testing ---
-# df = df.sample(500_000, random_state=42)
-
-# --- Train/validation split ---
+# first we want to split our training data and validation data, each with their own inputs/outputs
 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# --- Train Quantile Random Forest safely ---
+# train quantile random forest regressor
 qrf = RandomForestQuantileRegressor(
-    n_estimators=100,       # Start small
-    max_depth=10,           # Limit tree depth
-    min_samples_leaf=10,    # Enforce minimum leaf size to reduce leaf count
+    n_estimators=100,
+    max_depth=10,
+    min_samples_leaf=10,
     random_state=42
 )
 qrf.fit(X_train, y_train)
 
-# --- Predict multiple quantiles ---
+# we want to predict 3 quantiles, 0.1, 0.5, 0.9
 quantiles = [0.1, 0.5, 0.9]
 preds = qrf.predict(X_val, quantiles=quantiles)
 q10, q50, q90 = preds[:, 0], preds[:, 1], preds[:, 2]
 
-# --- Evaluation ---
+# MAE and RMSE evaluation of the QRF model
 mae = mean_absolute_error(y_val, q50)
 rmse = np.sqrt(mean_squared_error(y_val, q50))
 
 print(f"Q50 (median) MAE:  {mae:.4f}")
 print(f"Q50 (median) RMSE: {rmse:.4f}")
 
-# --- Save results ---
+# save outputs
 results = X_val.copy()
 results["actual"] = y_val.values
 results["q10"] = q10
