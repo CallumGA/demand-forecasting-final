@@ -17,7 +17,7 @@ import csv
 # the features xgboost trees will branch on
 FEATURES = [
     "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
-    "day_of_week", "month", "item_id", "store_id"
+    "day_of_week", "month", "item_id", "store_id", "is_weekend"
 ]
 
 CONFIDENCE_LEVEL = 0.95
@@ -28,7 +28,7 @@ model_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Mast
 model = joblib.load(model_path)
 
 # load evaluation input
-df_eval = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/eval_prediction_input.csv")
+df_eval = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/evaluation_input_data.csv")
 df_eval["item_id"] = df_eval["item_id"].astype("category")
 df_eval["store_id"] = df_eval["store_id"].astype("category")
 X_eval = df_eval[FEATURES]
@@ -51,7 +51,7 @@ df_merged = pd.merge(
 ).dropna(subset=["actual_sales"])
 
 # load training input
-df_train = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/sales_cleaned.csv")
+df_train = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv")
 df_train["item_id"] = df_train["item_id"].astype("category")
 df_train["store_id"] = df_train["store_id"].astype("category")
 X_train = df_train[FEATURES]
@@ -176,18 +176,6 @@ with open(summary_path, "w", newline="") as f:
         "timestamp": timestamp
     })
 
-# save 100 of our sample predictions for evaluation
-sample_path = os.path.join(log_dir, f"xgb_point_forecast_eval_predictions_{timestamp}.csv")
-sample_df = df_merged.sample(100, random_state=42)
-sample_df = sample_df[[
-    "item_id", "store_id", "d", "actual_sales", "predicted_sales",
-    "baseline_pred", "lower_bound", "upper_bound"
-]]
-sample_df["in_band"] = (
-    (sample_df["actual_sales"] >= sample_df["lower_bound"]) &
-    (sample_df["actual_sales"] <= sample_df["upper_bound"])
-)
-sample_df.to_csv(sample_path, index=False)
 
 # save the full prediction results
 full_path = os.path.join(log_dir, f"xgb_point_forecast_eval_predictions_full_{timestamp}.csv")
@@ -200,4 +188,4 @@ full_df["in_band"] = (
     (full_df["actual_sales"] <= full_df["upper_bound"])
 )
 full_df.to_csv(full_path, index=False)
-print(f"📦 Full predictions saved: {full_path}")
+print(f"Full predictions saved: {full_path}")

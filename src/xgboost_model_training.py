@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 import xgboost
+from dotenv import load_dotenv
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import joblib
 
@@ -12,7 +13,6 @@ import joblib
 ****************************************************************
 """
 
-# TODO: re do is_event_day.....this is constant....it is harming my model results - make accurate then re-train/predict
 
 # static hyperparameters
 POINT_FORECAST_CONFIG = {
@@ -122,13 +122,13 @@ def evaluate_prediction_intervals(y_true, intv):
 # 4. Make our predictions
 # 5. Create the interval bands and calculate evaluation metrics
 def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
-    data_path = os.getenv("CLEANED_SALES_DATA", "sales_cleaned.csv")
+    data_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv"
     df = pd.read_csv(data_path)
     df["item_id"] = df["item_id"].astype("category")
     df["store_id"] = df["store_id"].astype("category")
     FEATURES = [
         "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
-        "day_of_week", "month", "item_id", "store_id",
+        "day_of_week", "month", "item_id", "store_id", "is_weekend",
     ]
 
     train_df, val_df = groupwise_time_split(df, 28, 90)
@@ -155,9 +155,16 @@ def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
         "interval": evaluate_prediction_intervals(y_val, intervals),
     }
 
-    if os.getenv("SAVED_MODELS"):
-        os.makedirs(os.getenv("SAVED_MODELS"), exist_ok=True)
-        joblib.dump(model, os.path.join(os.getenv("SAVED_MODELS"), f"{model_name}.joblib"))
+    save_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models"
+    os.makedirs(save_path, exist_ok=True)
+    joblib.dump(model, os.path.join(save_path, f"{model_name}.joblib"))
+
+    print("\nModel training complete.")
+    print(f"MAE: {metrics['mae']:.4f}")
+    print(f"RMSE: {metrics['rmse']:.4f}")
+    print(
+        f"Interval Coverage: {metrics['interval']['coverage']:.4f} (Expected: {metrics['interval']['expected_coverage']:.2f})")
+    print(f"📏 Avg Interval Width: {metrics['interval']['average_width']:.4f}")
 
     return model, metrics
 
