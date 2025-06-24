@@ -9,7 +9,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 """
 ****************************************************************
-  Random Forest point-forecast (mean) – Group-wise split
+  Random Forest Model Training/Eval
+  Note: Run standalone before randomforest_prediction.py
 ****************************************************************
 """
 
@@ -97,6 +98,9 @@ def train_and_eval_rf(csv_file: str,
     for t, p in zip(y_val[:10], rf_pred[:10]):
         print(f"{t:8.2f}  {p:8.2f}")
     print("──────────────────────────────")
+
+    model_path = h2o.save_model(model=rf, path="/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models", force=True)
+    print(f"Model saved to: {model_path}")
 
     h2o.shutdown(prompt=False)
 
