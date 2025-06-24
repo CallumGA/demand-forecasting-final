@@ -1,56 +1,117 @@
 import os
+import warnings
+from typing import Tuple
+import numpy as np
+import pandas as pd
 import h2o
+from h2o.estimators import H2OGradientBoostingEstimator
 from h2o.estimators.random_forest import H2ORandomForestEstimator
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
 
 """
 ****************************************************************
- Quantile Random Forest Model Training (Stratified + Fast)
+ Quantile Random Forest (10th / 50th / 90th) – Group-wise Split
 ****************************************************************
 """
 
-# TODO: must be trained on the same data split as xgboost model (groupwise-time split)
-# TODO: comment and explain each function
-# TODO: compute baseline
-# TODO: potentially add interval predictions
+
+# *** Same groupwise time-split logic as in xgboost model trainer ***
+def groupwise_time_split(df: pd.DataFrame,
+                         val_days: int = 28,
+                         min_train_days: int = 90) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    train, val = [], []
+    for name, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
+        g = g.sort_values("d")
+        if len(g) >= min_train_days + val_days:
+            train.append(g.iloc[:-val_days])
+            val.append(g.iloc[-val_days:])
+        else:
+            warnings.warn(f"Skipping {name} – only {len(g)} rows.")
+    if not train:
+        raise ValueError("No groups have sufficient data for training.")
+    return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
 
 
-def train_and_evaluate_h2o_rf(csv_file, target_col='sales', validation_split=0.2):
+# *** Same baseline prediction logic as in xgboost model trainer ***
+def compute_baseline_predictions(train_df: pd.DataFrame,
+                                 val_df: pd.DataFrame,
+                                 window: int = 28) -> np.ndarray:
+    preds = []
+    for key, v in val_df.groupby(["item_id", "store_id"], observed=True):
+        g = train_df.loc[(train_df["item_id"] == key[0]) &
+                         (train_df["store_id"] == key[1])].sort_values("d")
+        baseline = g["sales"].mean() if len(g) < window else (
+            g["sales"].rolling(window, min_periods=window).mean().iloc[-1])
+        preds.extend([baseline] * len(v))
+    return np.array(preds)
+
+
+# *** Train the quantile random forest model ***
+def train_and_eval_qrf(csv_file: str,
+                       target_col: str = "sales") -> None:
+    print("➡️  Loading CSV …")
+    pdf = pd.read_csv(csv_file)
+    pdf["item_id"]  = pdf["item_id"].astype("category")
+    pdf["store_id"] = pdf["store_id"].astype("category")
+
+    print("➡️  Group-wise time split …")
+    train_df, val_df = groupwise_time_split(pdf, 28, 90)
+
+    # baseline for context
+    base_pred = compute_baseline_predictions(train_df, val_df, 28)
+    base_mae  = mean_absolute_error(val_df[target_col], base_pred)
+    base_rmse = np.sqrt(mean_squared_error(val_df[target_col], base_pred))
+
+    # this is my max memory on macbook air m3
     h2o.init(max_mem_size="16G", nthreads=-1)
+    htrain = h2o.H2OFrame(train_df)
+    hval   = h2o.H2OFrame(val_df)
+    for col in ["item_id", "store_id"]:
+        htrain[col] = htrain[col].asfactor()
+        hval[col]   = hval[col].asfactor()
 
-    print("Loading data...")
-    df = h2o.import_file(csv_file)
-    print(f"Dataset shape: {df.shape}")
+    features = [c for c in htrain.columns if c != target_col]
 
-    categorical_cols = ['item_id', 'store_id']
-    for col in categorical_cols:
-        if col in df.columns:
-            df[col] = df[col].asfactor()
-
-    train, test = df.split_frame(ratios=[1 - validation_split], seed=42)
-    feature_cols = [col for col in df.columns if col != target_col]
-
-    print("Training Random Forest...")
-    rf = H2ORandomForestEstimator(
-        ntrees=100,
-        max_depth=20,
+    print("➡Training quantile RF …")
+    rf = H2OGradientBoostingEstimator(
+        ntrees=300,
+        max_depth=6,
+        learn_rate=0.1,
         min_rows=10,
-        seed=42
+        sample_rate=0.9,
+        col_sample_rate=0.8,
+        seed=42,
+        distribution="quantile"
     )
-    rf.train(x=feature_cols, y=target_col, training_frame=train)
+    rf.train(x=features, y=target_col,
+             training_frame=htrain, validation_frame=hval)
 
-    print("Making predictions...")
-    predictions = rf.predict(test)
+    print("➡Predicting 0.10 / 0.50 / 0.90 quantiles …")
+    preds_q = rf.predict_quantiles(hval,
+                                   quantile_probabilities=[0.10, 0.50, 0.90])
+    q10 = preds_q["quantile_0.10"].as_data_frame().values.ravel()
+    q50 = preds_q["quantile_0.50"].as_data_frame().values.ravel()  # point
+    q90 = preds_q["quantile_0.90"].as_data_frame().values.ravel()
 
-    test_rmse = rf.rmse(valid=False, train=False)
-    test_mae = rf.mae(valid=False, train=False)
+    y_val = val_df[target_col].values
+    qrf_mae  = mean_absolute_error(y_val, q50)
+    qrf_rmse = np.sqrt(mean_squared_error(y_val, q50))
 
-    print(f"\nResults:\nRMSE: {test_rmse:.4f}\nMAE: {test_mae:.4f}")
+    print("\n───────────  RESULTS  ───────────")
+    print(f"Baseline – MAE: {base_mae:8.4f}   RMSE: {base_rmse:8.4f}")
+    print(f"Q-RF (50th) – MAE: {qrf_mae:8.4f}   RMSE: {qrf_rmse:8.4f}")
+    print("First few quantile rows:")
+    sample = np.column_stack([y_val[:5], q10[:5], q50[:5], q90[:5]])
+    print("   truth    q10     q50     q90")
+    for row in sample:
+        print(" ".join(f"{v:8.2f}" for v in row))
+    print("──────────────────────────────────")
 
     h2o.shutdown(prompt=False)
-    return test_rmse, test_mae
 
 
+# *** Main code entry point ***
 if __name__ == "__main__":
-    file_path = os.path.expanduser("~/h2o_data/sales_cleaned.csv")
-    rmse, mae = train_and_evaluate_h2o_rf(file_path)
-    print(f"Final - RMSE: {rmse:.4f}, MAE: {mae:.4f}")
+    csv_path = os.path.expanduser("~/h2o_data/training_input_data.csv")
+    train_and_eval_qrf(csv_path)
