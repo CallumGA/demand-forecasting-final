@@ -13,6 +13,8 @@ import csv
 ****************************************************************
 """
 
+# TODO: restructure/organize code to be more readable, then train/predict models, then finalize and add to submission package
+
 
 # the features xgboost trees will branch on
 FEATURES = [

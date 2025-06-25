@@ -12,6 +12,7 @@ import joblib
 ****************************************************************
 """
 
+# TODO: restructure/organize code to be more readable, then train/predict models, then finalize and add to submission package
 
 # static hyperparameters
 POINT_FORECAST_CONFIG = {

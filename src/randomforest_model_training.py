@@ -1,6 +1,4 @@
 import os
-import warnings
-from typing import Tuple
 import numpy as np
 import pandas as pd
 import h2o
@@ -13,6 +11,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
   Note: Run standalone before randomforest_prediction.py
 ****************************************************************
 """
+
+# TODO: restructure/organize code to be more readable, then train/predict models, then finalize and add to submission package
 
 
 # *** Split the dataset for training/validation ***
