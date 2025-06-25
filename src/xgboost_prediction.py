@@ -31,6 +31,8 @@ trained_model = joblib.load(model_path)
 evaluation_data_df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/evaluation_input_data.csv")
 evaluation_data_df["item_id"] = evaluation_data_df["item_id"].astype("category")
 evaluation_data_df["store_id"] = evaluation_data_df["store_id"].astype("category")
+
+# make our predictions with our input features
 X_evaluation = evaluation_data_df[FEATURES]
 evaluation_data_df["predicted_sales"] = trained_model.predict(X_evaluation).astype(np.float32)
 

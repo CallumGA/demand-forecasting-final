@@ -7,6 +7,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import os
 from datetime import datetime
 import csv
+import h2o
+from h2o.estimators.random_forest import H2ORandomForestEstimator
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
 """
@@ -45,4 +48,5 @@ def compute_baseline_predictions(training_df: pd.DataFrame, validation_df: pd.Da
     return np.array(baseline_predictions)
 
 
-# TODO: load model to make our predictions
+# load the trained h20 RF model
+model = h2o.load_model("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models/DRF_model_python_1750806434317_1")
