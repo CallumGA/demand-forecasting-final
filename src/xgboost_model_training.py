@@ -30,30 +30,30 @@ POINT_FORECAST_CONFIG = {
 
 # *** Split the dataset for training/validation ***
 # from each product/location group we must have at least 90 training days and 28 validation days
-def groupwise_time_split(df: pd.DataFrame, val_days: int = 28, min_train_days: int = 90):
-    train, val = [], []
-    for name, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
-        g = g.sort_values("d")
-        if len(g) >= min_train_days + val_days:
-            train.append(g.iloc[:-val_days])
-            val.append(g.iloc[-val_days:])
+def groupwise_time_split(df: pd.DataFrame, validation_day_count: int = 28, min_training_days: int = 90):
+    training, validation = [], []
+    for group_name, group in df.groupby(["item_id", "store_id"], sort=False, observed=True):
+        group = group.sort_values("d")
+        if len(group) >= min_training_days + validation_day_count:
+            training.append(group.iloc[:-validation_day_count])
+            validation.append(group.iloc[-validation_day_count:])
         else:
-            print(f"Warning: skipping {name} – only {len(g)} rows.")
-    if not train:
+            print(f"Warning: skipping {group_name} – only {len(group)} rows.")
+    if not training:
         raise ValueError("No groups have sufficient data for training.")
-    return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
+    return pd.concat(training, ignore_index=True), pd.concat(validation, ignore_index=True)
 
 
 # *** Compute the naive baseline predictions ***
 # from the training data, we take the last 28 days sales (rolling mean) and calculate the mean sales to use for calculating naive baseline MAE & RMSE
-def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, window: int = 28):
-    preds = []
-    for key, v in val_df.groupby(["item_id", "store_id"], observed=True):
-        g = train_df.loc[(train_df["item_id"] == key[0]) & (train_df["store_id"] == key[1])].sort_values("d")
-        baseline = g["sales"].mean() if len(g) < window else (
-            g["sales"].rolling(window, min_periods=window).mean().iloc[-1])
-        preds.extend([baseline] * len(v))
-    return np.array(preds)
+def compute_baseline_predictions(training_df: pd.DataFrame, validation_df: pd.DataFrame, window: int = 28):
+    baseline_predictions = []
+    for key, value in validation_df.groupby(["item_id", "store_id"], observed=True):
+        temp_grouping = training_df.loc[(training_df["item_id"] == key[0]) & (training_df["store_id"] == key[1])].sort_values("d")
+        baseline = temp_grouping["sales"].mean() if len(temp_grouping) < window else (
+            temp_grouping["sales"].rolling(window, min_periods=window).mean().iloc[-1])
+        baseline_predictions.extend([baseline] * len(value))
+    return np.array(baseline_predictions)
 
 
 # *** Add prediction bands for each product/location group ***
@@ -63,20 +63,20 @@ def compute_baseline_predictions(train_df: pd.DataFrame, val_df: pd.DataFrame, w
 #       ε = np.quantile(abs_res, 1 - alpha / 2)
 #  Derive the lower and upper bounds from ε:
 #       Lower = max(0, ŷ_new − ε), Upper = (ŷ_new + ε), where ŷ_new = new predicted sales,  ε = epsilon
-def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df,
+def add_groupwise_prediction_intervals(model, X_validation, X_train, y_train, validation_df, train_df,
                                        confidence_level=0.95, calib_frac=0.10):
-    point = model.predict(X_val)
+    point = model.predict(X_validation)
     lower = np.zeros_like(point)
     upper = np.zeros_like(point)
     interval_width = np.zeros_like(point)
     epsilon = {}
 
     alpha = 1 - confidence_level
-    val_df = val_df.copy()
-    val_df["pred"] = point
-    val_df = val_df.reset_index(drop=True)
+    validation_df = validation_df.copy()
+    validation_df["pred"] = point
+    validation_df = validation_df.reset_index(drop=True)
 
-    for key, group in val_df.groupby(["item_id", "store_id"], observed=True):
+    for key, group in validation_df.groupby(["item_id", "store_id"], observed=True):
         idx_train = ((train_df["item_id"] == key[0]) & (train_df["store_id"] == key[1]))
         X_tg = X_train[idx_train]
         y_tg = y_train[idx_train]
@@ -89,9 +89,9 @@ def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, t
             abs_res = np.abs(y_tg.iloc[idx] - model.predict(X_tg.iloc[idx]))
             eps = np.quantile(abs_res, 1 - alpha / 2)
 
-        group_idx = val_df[(val_df["item_id"] == key[0]) & (val_df["store_id"] == key[1])].index
-        lower[group_idx] = np.maximum(0, val_df.loc[group_idx, "pred"] - eps)
-        upper[group_idx] = val_df.loc[group_idx, "pred"] + eps
+        group_idx = validation_df[(validation_df["item_id"] == key[0]) & (validation_df["store_id"] == key[1])].index
+        lower[group_idx] = np.maximum(0, validation_df.loc[group_idx, "pred"] - eps)
+        upper[group_idx] = validation_df.loc[group_idx, "pred"] + eps
         interval_width[group_idx] = upper[group_idx] - lower[group_idx]
         epsilon[str(key)] = eps
 
@@ -107,9 +107,9 @@ def add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, t
 
 # *** Evaluate our interval bands to see how well they performed for evaluation ***
 def evaluate_prediction_intervals(y_true, intv):
-    within = (y_true >= intv["lower_bound"]) & (y_true <= intv["upper_bound"])
+    within_bounds = (y_true >= intv["lower_bound"]) & (y_true <= intv["upper_bound"])
     return {
-        "coverage": float(within.mean()),
+        "coverage": float(within_bounds.mean()),
         "average_width": float(intv["interval_width"].mean()),
         "expected_coverage": intv["confidence_level"],
     }
@@ -122,19 +122,19 @@ def evaluate_prediction_intervals(y_true, intv):
 # 4. Make our predictions
 # 5. Create the interval bands and calculate evaluation metrics
 def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
-    data_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv"
-    df = pd.read_csv(data_path)
-    df["item_id"] = df["item_id"].astype("category")
-    df["store_id"] = df["store_id"].astype("category")
+    training_input_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv"
+    training_input_df = pd.read_csv(training_input_path)
+    training_input_df["item_id"] = training_input_df["item_id"].astype("category")
+    training_input_df["store_id"] = training_input_df["store_id"].astype("category")
     FEATURES = [
         "sell_price", "is_event_day", "lag_7", "rolling_mean_7",
         "day_of_week", "month", "item_id", "store_id", "is_weekend",
     ]
 
-    train_df, val_df = groupwise_time_split(df, 28, 90)
+    train_df, validation_df = groupwise_time_split(training_input_df, 28, 90)
 
     X_train, y_train = train_df[FEATURES], train_df["sales"]
-    X_val, y_val = val_df[FEATURES], val_df["sales"]
+    X_val, y_val = validation_df[FEATURES], validation_df["sales"]
 
     model = xgboost.XGBRegressor(
         objective="reg:squarederror",
@@ -146,13 +146,13 @@ def train_point_forecast_model(model_name: str = "xgb_point_forecast"):
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
-    y_pred = model.predict(X_val)
-    intervals = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, val_df, train_df, 0.95)
+    y_predictions = model.predict(X_val)
+    interval_predictions = add_groupwise_prediction_intervals(model, X_val, X_train, y_train, validation_df, train_df, 0.95)
 
     metrics = {
-        "mae": mean_absolute_error(y_val, y_pred),
-        "rmse": np.sqrt(mean_squared_error(y_val, y_pred)),
-        "interval": evaluate_prediction_intervals(y_val, intervals),
+        "mae": mean_absolute_error(y_val, y_predictions),
+        "rmse": np.sqrt(mean_squared_error(y_val, y_predictions)),
+        "interval": evaluate_prediction_intervals(y_val, interval_predictions),
     }
 
     save_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models"
