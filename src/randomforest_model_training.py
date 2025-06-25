@@ -58,48 +58,48 @@ def train_and_eval_rf(csv_file: str,
     train_df, val_df = groupwise_time_split(pdf, 28, 90)
 
     # compute baselines
-    base_pred = compute_baseline_predictions(train_df, val_df, 28)
-    base_mae  = mean_absolute_error(val_df[target_col], base_pred)
-    base_rmse = np.sqrt(mean_squared_error(val_df[target_col], base_pred))
+    baseline_pred = compute_baseline_predictions(train_df, val_df, 28)
+    baseline_mae  = mean_absolute_error(val_df[target_col], baseline_pred)
+    baseline_rmse = np.sqrt(mean_squared_error(val_df[target_col], baseline_pred))
 
     h2o.init(max_mem_size="16G", nthreads=-1)
-    htrain = h2o.H2OFrame(train_df)
-    hval   = h2o.H2OFrame(val_df)
+    h2o_train = h2o.H2OFrame(train_df)
+    h2o_validation   = h2o.H2OFrame(val_df)
     for col in ["item_id", "store_id"]:
-        htrain[col] = htrain[col].asfactor()
-        hval[col]   = hval[col].asfactor()
+        h2o_train[col] = h2o_train[col].asfactor()
+        h2o_validation[col]   = h2o_validation[col].asfactor()
 
-    features = [c for c in htrain.columns if c != target_col]
+    features = [c for c in h2o_train.columns if c != target_col]
 
     # train our DRF model
     print("➡️  Training standard DRF …")
-    rf = H2ORandomForestEstimator(
+    model = H2ORandomForestEstimator(
         ntrees      = 300,
         max_depth   = 10,
         min_rows    = 10,
         sample_rate = 0.9,
         seed        = 42
     )
-    rf.train(x=features, y=target_col,
-             training_frame=htrain, validation_frame=hval)
+    model.train(x=features, y=target_col,
+             training_frame=h2o_train, validation_frame=h2o_validation)
 
     print("➡️  Predicting on validation …")
-    rf_pred = rf.predict(hval)["predict"].as_data_frame().values.ravel()
+    predictions = model.predict(h2o_validation)["predict"].as_data_frame().values.ravel()
 
     # evaluation metrics
-    y_val   = val_df[target_col].values
-    rf_mae  = mean_absolute_error(y_val, rf_pred)
-    rf_rmse = np.sqrt(mean_squared_error(y_val, rf_pred))
+    y_validation   = val_df[target_col].values
+    mae  = mean_absolute_error(y_validation, predictions)
+    rmse = np.sqrt(mean_squared_error(y_validation, predictions))
 
     print("\n────────── RESULTS ──────────")
-    print(f"Baseline – MAE: {base_mae:8.4f}   RMSE: {base_rmse:8.4f}")
-    print(f"DRF      – MAE: {rf_mae:8.4f}   RMSE: {rf_rmse:8.4f}")
-    print("First few rows (truth | rf_pred):")
-    for t, p in zip(y_val[:10], rf_pred[:10]):
+    print(f"Baseline – MAE: {baseline_mae:8.4f}   RMSE: {baseline_rmse:8.4f}")
+    print(f"DRF      – MAE: {mae:8.4f}   RMSE: {rmse:8.4f}")
+    print("First few rows (truth | predictions):")
+    for t, p in zip(y_validation[:10], predictions[:10]):
         print(f"{t:8.2f}  {p:8.2f}")
     print("──────────────────────────────")
 
-    model_path = h2o.save_model(model=rf, path="/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models", force=True)
+    model_path = h2o.save_model(model=model, path="/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models", force=True)
     print(f"Model saved to: {model_path}")
 
     h2o.shutdown(prompt=False)
