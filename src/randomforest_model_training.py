@@ -59,6 +59,7 @@ def train_and_eval_rf(csv_file: str,
     baseline_mae  = mean_absolute_error(validation_df[target_col], baseline_predictions)
     baseline_rmse = np.sqrt(mean_squared_error(validation_df[target_col], baseline_predictions))
 
+    # 16gb RAM on my macbook air m3
     h2o.init(max_mem_size="16G", nthreads=-1)
     h2o_train = h2o.H2OFrame(train_df)
     h2o_validation   = h2o.H2OFrame(validation_df)
