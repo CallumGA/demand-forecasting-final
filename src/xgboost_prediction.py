@@ -23,39 +23,39 @@ FEATURES = [
 CONFIDENCE_LEVEL = 0.95
 CALIB_FRAC = 0.10
 
-# load the model we trained and validated with a rough 90/10 split evenly accross product/location pairs
+# load the model we trained and validated with a rough 90/10 split evenly across product/location pairs
 model_path = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/models/xgb_point_forecast.joblib"
-model = joblib.load(model_path)
+trained_model = joblib.load(model_path)
 
 # load evaluation input
-df_eval = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/evaluation_input_data.csv")
-df_eval["item_id"] = df_eval["item_id"].astype("category")
-df_eval["store_id"] = df_eval["store_id"].astype("category")
-X_eval = df_eval[FEATURES]
-df_eval["predicted_sales"] = model.predict(X_eval).astype(np.float32)
+evaluation_data_df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/evaluation_input_data.csv")
+evaluation_data_df["item_id"] = evaluation_data_df["item_id"].astype("category")
+evaluation_data_df["store_id"] = evaluation_data_df["store_id"].astype("category")
+X_evaluation = evaluation_data_df[FEATURES]
+evaluation_data_df["predicted_sales"] = trained_model.predict(X_evaluation).astype(np.float32)
 
 # load actual sales
-df_truth = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/raw/sales_train_evaluation.csv")
-df_truth = df_truth.melt(
+true_predictions_df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/raw/sales_train_evaluation.csv")
+true_predictions_df = true_predictions_df.melt(
     id_vars=["id", "item_id", "dept_id", "cat_id", "store_id", "state_id"],
     var_name="d",
     value_name="actual_sales"
 )
 
 # merge evaluation dataframe with actual sales
-df_merged = pd.merge(
-    df_eval,
-    df_truth[["item_id", "store_id", "d", "actual_sales"]],
+merged_df = pd.merge(
+    evaluation_data_df,
+    true_predictions_df[["item_id", "store_id", "d", "actual_sales"]],
     on=["item_id", "store_id", "d"],
     how="left"
 ).dropna(subset=["actual_sales"])
 
 # load training input
-df_train = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv")
-df_train["item_id"] = df_train["item_id"].astype("category")
-df_train["store_id"] = df_train["store_id"].astype("category")
-X_train = df_train[FEATURES]
-y_train = df_train["sales"]
+train_data_df = pd.read_csv("/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/data/processed/training_input_data.csv")
+train_data_df["item_id"] = train_data_df["item_id"].astype("category")
+train_data_df["store_id"] = train_data_df["store_id"].astype("category")
+X_train = train_data_df[FEATURES]
+y_train = train_data_df["sales"]
 
 
 # *** Add prediction bands for each product/location group ***
@@ -65,76 +65,76 @@ y_train = df_train["sales"]
 #       ε = np.quantile(abs_res, 1 - alpha / 2)
 #  Derive the lower and upper bounds from ε:
 #       Lower = max(0, ŷ_new − ε), Upper = (ŷ_new + ε), where ŷ_new = new predicted sales,  ε = epsilon
-def add_groupwise_prediction_intervals_final(model, df_eval, df_train, X_train, y_train,
+def add_groupwise_prediction_intervals_final(model, evaluation_df, df_train, X_train, y_train,
                                              confidence_level=0.95, calib_frac=0.10):
-    df_eval = df_eval.copy()
-    lower = np.zeros(len(df_eval))
-    upper = np.zeros(len(df_eval))
-    interval_width = np.zeros(len(df_eval))
+    evaluation_df = evaluation_df.copy()
+    lower_bound = np.zeros(len(evaluation_df))
+    upper_bound = np.zeros(len(evaluation_df))
+    interval_width = np.zeros(len(evaluation_df))
     alpha = 1 - confidence_level
 
-    for key, group in df_eval.groupby(["item_id", "store_id"], observed=True):
+    for key, group in evaluation_df.groupby(["item_id", "store_id"], observed=True):
         mask = (df_train["item_id"] == key[0]) & (df_train["store_id"] == key[1])
-        X_tg = X_train[mask]
-        y_tg = y_train[mask]
+        X_training_features = X_train[mask]
+        y_sales = y_train[mask]
 
-        if len(y_tg) < 10:
-            eps = 0.0
+        if len(y_sales) < 10:
+            epsilon = 0.0
         else:
-            rng = np.random.default_rng(42)
-            idx = rng.choice(len(X_tg), max(1, int(calib_frac * len(X_tg))), replace=False)
-            abs_res = np.abs(y_tg.iloc[idx] - model.predict(X_tg.iloc[idx]))
-            eps = np.quantile(abs_res, 1 - alpha / 2)
+            range = np.random.default_rng(42)
+            idx = range.choice(len(X_training_features), max(1, int(calib_frac * len(X_training_features))), replace=False)
+            absolute_residuals = np.abs(y_sales.iloc[idx] - model.predict(X_training_features.iloc[idx]))
+            epsilon = np.quantile(absolute_residuals, 1 - alpha / 2)
 
-        idx_eval = df_eval[(df_eval["item_id"] == key[0]) & (df_eval["store_id"] == key[1])].index
-        lower[idx_eval] = np.maximum(0, df_eval.loc[idx_eval, "predicted_sales"] - eps)
-        upper[idx_eval] = df_eval.loc[idx_eval, "predicted_sales"] + eps
-        interval_width[idx_eval] = upper[idx_eval] - lower[idx_eval]
+        idx_eval = evaluation_df[(evaluation_df["item_id"] == key[0]) & (evaluation_df["store_id"] == key[1])].index
+        lower_bound[idx_eval] = np.maximum(0, evaluation_df.loc[idx_eval, "predicted_sales"] - epsilon)
+        upper_bound[idx_eval] = evaluation_df.loc[idx_eval, "predicted_sales"] + epsilon
+        interval_width[idx_eval] = upper_bound[idx_eval] - lower_bound[idx_eval]
 
     return {
-        "lower_bound": lower,
-        "upper_bound": upper,
+        "lower_bound": lower_bound,
+        "upper_bound": upper_bound,
         "interval_width": interval_width,
         "confidence_level": confidence_level
     }
 
 intervals = add_groupwise_prediction_intervals_final(
-    model, df_eval, df_train, X_train, y_train,
+    trained_model, evaluation_data_df, train_data_df, X_train, y_train,
     confidence_level=CONFIDENCE_LEVEL, calib_frac=CALIB_FRAC
 )
 
 # add to merged df
-df_merged["lower_bound"] = intervals["lower_bound"]
-df_merged["upper_bound"] = intervals["upper_bound"]
+merged_df["lower_bound"] = intervals["lower_bound"]
+merged_df["upper_bound"] = intervals["upper_bound"]
 
 # calculate MAE and RMSE against actual sales for actual final predictions
-mae = mean_absolute_error(df_merged["actual_sales"], df_merged["predicted_sales"])
-rmse = np.sqrt(mean_squared_error(df_merged["actual_sales"], df_merged["predicted_sales"]))
+mae = mean_absolute_error(merged_df["actual_sales"], merged_df["predicted_sales"])
+rmse = np.sqrt(mean_squared_error(merged_df["actual_sales"], merged_df["predicted_sales"]))
 
 
 # *** Evaluate our interval bands to see how well they performed for evaluation ***
-def evaluate_prediction_intervals(y_true, intv):
-    within = (y_true >= intv["lower_bound"]) & (y_true <= intv["upper_bound"])
+def evaluate_prediction_intervals(y_true, interval):
+    within_bounds = (y_true >= interval["lower_bound"]) & (y_true <= interval["upper_bound"])
     return {
-        "coverage": float(within.mean()),
-        "average_width": float(intv["interval_width"].mean()),
-        "expected_coverage": intv["confidence_level"]
+        "coverage": float(within_bounds.mean()),
+        "average_width": float(interval["interval_width"].mean()),
+        "expected_coverage": interval["confidence_level"]
     }
 
 interval_metrics = evaluate_prediction_intervals(
-    df_merged["actual_sales"],
+    merged_df["actual_sales"],
     {
-        "lower_bound": df_merged["lower_bound"],
-        "upper_bound": df_merged["upper_bound"],
-        "interval_width": df_merged["upper_bound"] - df_merged["lower_bound"],
+        "lower_bound": merged_df["lower_bound"],
+        "upper_bound": merged_df["upper_bound"],
+        "interval_width": merged_df["upper_bound"] - merged_df["lower_bound"],
         "confidence_level": CONFIDENCE_LEVEL
     }
 )
 
 # *** Compute the evaluation baseline to compare our predictions against ***
-def compute_eval_baseline_predictions(train_df, eval_df, window=28):
-    preds = []
-    for key, g_eval in eval_df.groupby(["item_id", "store_id"], observed=True):
+def compute_eval_baseline_predictions(train_df, evaluation_df, window=28):
+    baseline_predictions = []
+    for key, group in evaluation_df.groupby(["item_id", "store_id"], observed=True):
         g_train = train_df.loc[
             (train_df["item_id"] == key[0]) & (train_df["store_id"] == key[1])
         ].sort_values("d")
@@ -143,13 +143,13 @@ def compute_eval_baseline_predictions(train_df, eval_df, window=28):
             baseline = g_train["sales"].mean()
         else:
             baseline = g_train["sales"].rolling(window=window, min_periods=window).mean().iloc[-1]
-        preds.extend([baseline] * len(g_eval))
-    return np.array(preds)
+        baseline_predictions.extend([baseline] * len(group))
+    return np.array(baseline_predictions)
 
 # calculate MAE and RMSE against actual sales for baseline predictions
-df_merged["baseline_pred"] = compute_eval_baseline_predictions(df_train, df_merged)
-baseline_mae = mean_absolute_error(df_merged["actual_sales"], df_merged["baseline_pred"])
-baseline_rmse = np.sqrt(mean_squared_error(df_merged["actual_sales"], df_merged["baseline_pred"]))
+merged_df["baseline_pred"] = compute_eval_baseline_predictions(train_data_df, merged_df)
+baseline_mae = mean_absolute_error(merged_df["actual_sales"], merged_df["baseline_pred"])
+baseline_rmse = np.sqrt(mean_squared_error(merged_df["actual_sales"], merged_df["baseline_pred"]))
 
 # output dir setup
 log_dir = "/Users/callumanderson/Documents/Documents - Callum’s Laptop/Masters-File-Repo/MIA5130/final-project/final-project-implementation/real_evaluation_predictions/"
@@ -179,7 +179,7 @@ with open(summary_path, "w", newline="") as f:
 
 # save the full prediction results
 full_path = os.path.join(log_dir, f"xgb_point_forecast_eval_predictions_full_{timestamp}.csv")
-full_df = df_merged[[
+full_df = merged_df[[
     "item_id", "store_id", "d", "actual_sales", "predicted_sales",
     "baseline_pred", "lower_bound", "upper_bound"
 ]].copy()
