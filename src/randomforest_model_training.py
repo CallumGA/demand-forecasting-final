@@ -15,56 +15,53 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 """
 
 
-# *** Split groupwise for training/validation - Identical to XGBoost model ***
-def groupwise_time_split(df: pd.DataFrame,
-                         val_days: int = 28,
-                         min_train_days: int = 90) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    train, val = [], []
-    for name, g in df.groupby(["item_id", "store_id"], sort=False, observed=True):
-        g = g.sort_values("d")
-        if len(g) >= min_train_days + val_days:
-            train.append(g.iloc[:-val_days])
-            val.append(g.iloc[-val_days:])
+# *** Split the dataset for training/validation ***
+# from each product/location group we must have at least 90 training days and 28 validation days
+def groupwise_time_split(df: pd.DataFrame, validation_day_count: int = 28, min_training_days: int = 90):
+    training, validation = [], []
+    for group_name, group in df.groupby(["item_id", "store_id"], sort=False, observed=True):
+        group = group.sort_values("d")
+        if len(group) >= min_training_days + validation_day_count:
+            training.append(group.iloc[:-validation_day_count])
+            validation.append(group.iloc[-validation_day_count:])
         else:
-            warnings.warn(f"Skipping {name} – only {len(g)} rows.")
-    if not train:
+            print(f"Warning: skipping {group_name} – only {len(group)} rows.")
+    if not training:
         raise ValueError("No groups have sufficient data for training.")
-    return pd.concat(train, ignore_index=True), pd.concat(val, ignore_index=True)
+    return pd.concat(training, ignore_index=True), pd.concat(validation, ignore_index=True)
 
 
-# *** Implement baseline predictions ***
-def compute_baseline_predictions(train_df: pd.DataFrame,
-                                 val_df: pd.DataFrame,
-                                 window: int = 28) -> np.ndarray:
-    preds = []
-    for key, v in val_df.groupby(["item_id", "store_id"], observed=True):
-        g = train_df.loc[(train_df["item_id"] == key[0]) &
-                         (train_df["store_id"] == key[1])].sort_values("d")
-        baseline = g["sales"].mean() if len(g) < window else (
-            g["sales"].rolling(window, min_periods=window).mean().iloc[-1])
-        preds.extend([baseline] * len(v))
-    return np.array(preds)
+# *** Compute the naive baseline predictions ***
+# from the training data, we take the last 28 days sales (rolling mean) and calculate the mean sales to use for calculating naive baseline MAE & RMSE
+def compute_baseline_predictions(training_df: pd.DataFrame, validation_df: pd.DataFrame, window: int = 28):
+    baseline_predictions = []
+    for key, value in validation_df.groupby(["item_id", "store_id"], observed=True):
+        temp_grouping = training_df.loc[(training_df["item_id"] == key[0]) & (training_df["store_id"] == key[1])].sort_values("d")
+        baseline = temp_grouping["sales"].mean() if len(temp_grouping) < window else (
+            temp_grouping["sales"].rolling(window, min_periods=window).mean().iloc[-1])
+        baseline_predictions.extend([baseline] * len(value))
+    return np.array(baseline_predictions)
 
 
 # *** Training and validation ***
 def train_and_eval_rf(csv_file: str,
                       target_col: str = "sales") -> None:
     print("➡️  Loading CSV …")
-    pdf = pd.read_csv(csv_file)
-    pdf["item_id"]  = pdf["item_id"].astype("category")
-    pdf["store_id"] = pdf["store_id"].astype("category")
+    training_data_df = pd.read_csv(csv_file)
+    training_data_df["item_id"]  = training_data_df["item_id"].astype("category")
+    training_data_df["store_id"] = training_data_df["store_id"].astype("category")
 
     print("➡️  Group-wise time split …")
-    train_df, val_df = groupwise_time_split(pdf, 28, 90)
+    train_df, validation_df = groupwise_time_split(training_data_df, 28, 90)
 
     # compute baselines
-    baseline_pred = compute_baseline_predictions(train_df, val_df, 28)
-    baseline_mae  = mean_absolute_error(val_df[target_col], baseline_pred)
-    baseline_rmse = np.sqrt(mean_squared_error(val_df[target_col], baseline_pred))
+    baseline_predictions = compute_baseline_predictions(train_df, validation_df, 28)
+    baseline_mae  = mean_absolute_error(validation_df[target_col], baseline_predictions)
+    baseline_rmse = np.sqrt(mean_squared_error(validation_df[target_col], baseline_predictions))
 
     h2o.init(max_mem_size="16G", nthreads=-1)
     h2o_train = h2o.H2OFrame(train_df)
-    h2o_validation   = h2o.H2OFrame(val_df)
+    h2o_validation   = h2o.H2OFrame(validation_df)
     for col in ["item_id", "store_id"]:
         h2o_train[col] = h2o_train[col].asfactor()
         h2o_validation[col]   = h2o_validation[col].asfactor()
@@ -87,7 +84,7 @@ def train_and_eval_rf(csv_file: str,
     predictions = model.predict(h2o_validation)["predict"].as_data_frame().values.ravel()
 
     # evaluation metrics
-    y_validation   = val_df[target_col].values
+    y_validation   = validation_df[target_col].values
     mae  = mean_absolute_error(y_validation, predictions)
     rmse = np.sqrt(mean_squared_error(y_validation, predictions))
 
