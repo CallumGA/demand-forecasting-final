@@ -1,0 +1,6 @@
+h2o==3.46.0.7        # random-Forest training/prediction
+joblib==1.5.1        # model serialization for XGBoost
+numpy==2.3.0         # numerical arrays
+pandas==2.3.0        # data-frame handling
+scikit-learn==1.7.0  # MAE/RMSE metrics
+xgboost==3.0.2       # gradient-boosted trees
